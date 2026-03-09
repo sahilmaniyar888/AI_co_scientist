@@ -1,0 +1,9 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "app.py",
+    "core"
+  ],
+  "typeCheckingMode": "basic"
+}

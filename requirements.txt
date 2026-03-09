@@ -1,0 +1,10 @@
+streamlit
+openai
+python-dotenv
+biopython
+pymupdf  # For PDF extraction
+networkx  # For knowledge graph
+pandas
+numpy
+matplotlib
+seaborn
