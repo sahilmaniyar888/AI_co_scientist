@@ -1,3 +1,4 @@
+import os
 from typing import Dict, Iterator, Mapping, Sequence, cast
 
 from openai import OpenAI
@@ -22,8 +23,9 @@ class K2Client:
             api_key=api_key,
             base_url=base_url
         )
-        # K2 Think V2 model identifier - verify this with the hackathon docs
-        self.model = "k2-think-v2"
+        # K2 model identifier from your curl example.
+        # Allow override via env for quick switching if needed.
+        self.model = os.getenv("K2_MODEL", "MBZUAI-IFM/K2-Think-v2")
     
     def chat_with_k2(
         self,
