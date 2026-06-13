@@ -1,3 +1,4 @@
+import json
 import os
 from typing import Dict, Iterator, Mapping, Sequence, cast
 
@@ -31,33 +32,24 @@ class K2Client:
         self,
         messages: Sequence[Mapping[str, str]],
         system_prompt: str,
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        max_tokens: int = 8000,
     ) -> Dict[str, str]:
         """
         Send a chat request to K2 Think V2 and parse the response.
-        
-        K2 Think V2 outputs reasoning in <think>...</think> tags followed by
-        the final answer. This function separates them for transparency.
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content'
-            system_prompt: The system prompt defining agent behavior
-            temperature: Sampling temperature (0.0 to 1.0)
-            
+
         Returns:
             dict with 'thinking_trace' and 'final_response' keys
         """
-        
-        # Prepend system prompt to messages
+
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
-        
+
         try:
-            # Make the API call
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=cast(Sequence[ChatCompletionMessageParam], full_messages),
                 temperature=temperature,
-                max_tokens=4000  # Adjust based on your needs
+                max_tokens=max_tokens,
             )
             
             # Extract the response content
@@ -65,6 +57,21 @@ class K2Client:
             
             # Parse out the <think> tags
             parsed = self._parse_thinking_tags(raw_content)
+            if not parsed["thinking_trace"] and self._looks_like_reasoning_draft(
+                parsed["final_response"],
+                system_prompt,
+            ):
+                finalized = self._finalize_answer(
+                    messages=messages,
+                    system_prompt=system_prompt,
+                    draft=parsed["final_response"],
+                    max_tokens=max_tokens,
+                )
+                if finalized:
+                    return {
+                        "thinking_trace": parsed["final_response"],
+                        "final_response": finalized,
+                    }
             
             return parsed
             
@@ -110,6 +117,68 @@ class K2Client:
             'thinking_trace': thinking_trace,
             'final_response': final_response
         }
+
+    def _looks_like_reasoning_draft(self, text: str, system_prompt: str) -> bool:
+        if not text:
+            return False
+
+        snippet = text.strip()
+        snippet_lower = snippet.lower()
+        prompt_lower = system_prompt.lower()
+
+        expects_json = "valid json" in prompt_lower or "output as json" in prompt_lower
+        if expects_json:
+            return not snippet.startswith("{") and not snippet.startswith("[")
+
+        expects_latex = "\\documentclass" in system_prompt or "latex" in prompt_lower
+        if expects_latex:
+            return not snippet.startswith("\\documentclass") and (
+                "return only the complete latex document" in prompt_lower
+                or "output format" in prompt_lower
+            )
+
+        return False
+
+    def _finalize_answer(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        system_prompt: str,
+        draft: str,
+        max_tokens: int,
+    ) -> str:
+        finalizer_system = (
+            "You are a strict response finalizer. "
+            "The draft below contains reasoning, planning text, or meta commentary instead of the required final answer. "
+            "Using the original task and constraints, return ONLY the final answer. "
+            "Do not include chain-of-thought, do not restate the task, and do not add explanations."
+        )
+        finalizer_user = (
+            "Original system prompt:\n"
+            f"{system_prompt}\n\n"
+            "Original messages:\n"
+            f"{json.dumps(list(messages), indent=2)}\n\n"
+            "Draft to finalize:\n"
+            f"{draft}\n\n"
+            "Return only the final answer."
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=cast(
+                    Sequence[ChatCompletionMessageParam],
+                    [
+                        {"role": "system", "content": finalizer_system},
+                        {"role": "user", "content": finalizer_user},
+                    ],
+                ),
+                temperature=0.2,
+                max_tokens=max_tokens,
+            )
+            content = response.choices[0].message.content or ""
+            return self._parse_thinking_tags(content)["final_response"]
+        except Exception:
+            return ""
     
     def chat_with_streaming(
         self,

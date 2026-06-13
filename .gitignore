@@ -34,6 +34,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Runtime database (regenerated on first run)
+data/discovery.db
+
 # Project-generated data (keep folder structure only)
 data/papers/*
 !data/papers/.gitkeep

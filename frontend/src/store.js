@@ -1,61 +1,145 @@
 import { create } from 'zustand'
 
-export const useStore = create((set) => ({
-  sessionId: null,
-  query: '',
-  setSession: (sessionId, query) => set({ sessionId, query }),
-  clearSession: () =>
-    set({
-      sessionId: null,
-      query: '',
-      completedStages: [],
-      activeStage: 1,
-      messages: {},
-      artifacts: {},
-      thinking: {},
-      uploadedFile: null,
-      isRunning: false,
-    }),
+const THINK_CAP = 7000
+const FEED_CAP = 200
 
-  activeStage: 1,
-  completedStages: [],
-  setActiveStage: (stage) => set({ activeStage: stage }),
-  markStageComplete: (stage) =>
-    set((state) => ({ completedStages: [...new Set([...state.completedStages, stage])] })),
+const STAGE_ORDER = [
+  'queued', 'literature', 'graph', 'gaps', 'contradictions',
+  'hypothesis_gen', 'critique', 'tournament', 'scoring', 'meta_review', 'complete',
+]
 
-  isRunning: false,
-  setRunning: (value) => set({ isRunning: value }),
+function freshLive() {
+  return {
+    runId: null,
+    goal: '',
+    plan: null,
+    stage: 'queued',
+    stageLabel: 'Queued',
+    progress: 0,
+    memoryUsed: false,
+    papersCount: 0,
+    gapsCount: 0,
+    contradictionsCount: 0,
+    agents: {},          // name -> { status, ts }
+    activeAgent: null,
+    thinkBuffer: '',
+    feed: [],            // newest-first feed cards
+    hypotheses: {},      // id -> { ... }
+    eliminated: [],      // { id, title, reason, critique_score }
+    debates: [],         // newest-first
+    complete: false,
+    error: null,
+  }
+}
 
-  messages: {},
-  addMessage: (stage, message) =>
-    set((state) => ({
-      messages: {
-        ...state.messages,
-        [stage]: [...(state.messages[stage] || []), message],
-      },
-    })),
+let feedSeq = 0
+const card = (type, payload) => ({ id: `f${feedSeq++}`, type, ts: Date.now(), ...payload })
 
-  thinking: {},
-  setThinking: (stage, value) =>
-    set((state) => ({
-      thinking: {
-        ...state.thinking,
-        [stage]: value,
-      },
-    })),
+export const useStore = create((set, get) => ({
+  ...freshLive(),
 
-  artifacts: {},
-  setArtifact: (stage, data) =>
-    set((state) => ({
-      artifacts: {
-        ...state.artifacts,
-        [stage]: data,
-      },
-    })),
+  resetLive(runId, goal) {
+    set({ ...freshLive(), runId, goal })
+  },
 
-  uploadedFile: null,
-  setUploadedFile: (file) => set({ uploadedFile: file }),
-
-  showThinking: true,
-  toggleThinking: () => set((state) => ({ showThinking: !state.showThinking })),
+  applyEvent({ type, data }) {
+    const s = get()
+    switch (type) {
+      case 'run_started':
+        set({ runId: data.run_id, goal: data.goal || s.goal })
+        break
+      case 'plan':
+        set({
+          plan: data,
+          memoryUsed: !!data.memory_used,
+        })
+        break
+      case 'stage':
+        set({ stage: data.stage, stageLabel: data.label, progress: data.progress })
+        break
+      case 'papers_loaded':
+        set({ papersCount: data.count })
+        set({ feed: [card('papers', { count: data.count, source: data.source }), ...s.feed].slice(0, FEED_CAP) })
+        break
+      case 'agent_started':
+        set({ agents: { ...s.agents, [data.agent]: { status: 'thinking', ts: Date.now() } } })
+        break
+      case 'agent_thinking': {
+        const next = (s.thinkBuffer + data.chunk).slice(-THINK_CAP)
+        set({
+          thinkBuffer: next,
+          activeAgent: data.agent,
+          agents: { ...s.agents, [data.agent]: { status: 'thinking', ts: Date.now() } },
+        })
+        break
+      }
+      case 'agent_output':
+        set({ agents: { ...s.agents, [data.agent]: { status: 'done', ts: Date.now() } } })
+        break
+      case 'gaps_done':
+        set({ gapsCount: data.count })
+        set({ feed: [card('gaps', { count: data.count, gaps: data.gaps || [] }), ...s.feed].slice(0, FEED_CAP) })
+        break
+      case 'contradictions_done':
+        set({ contradictionsCount: data.count })
+        if (data.count) set({ feed: [card('contradictions', { count: data.count }), ...s.feed].slice(0, FEED_CAP) })
+        break
+      case 'hypothesis_added': {
+        const h = {
+          id: data.id, title: data.title, archetype: data.archetype,
+          elo: data.elo || 1000, generation_type: data.generation_type,
+          parent_ids: data.parent_ids || [], status: 'active',
+        }
+        set({
+          hypotheses: { ...s.hypotheses, [data.id]: { ...(s.hypotheses[data.id] || {}), ...h } },
+          feed: [card('hypothesis', h), ...s.feed].slice(0, FEED_CAP),
+        })
+        break
+      }
+      case 'hypothesis_critiqued': {
+        const cur = s.hypotheses[data.id] || {}
+        set({ hypotheses: { ...s.hypotheses, [data.id]: { ...cur, critique_score: data.critique_score } } })
+        break
+      }
+      case 'hypothesis_eliminated': {
+        const cur = s.hypotheses[data.id] || {}
+        set({
+          hypotheses: { ...s.hypotheses, [data.id]: { ...cur, status: 'eliminated' } },
+          eliminated: [{ id: data.id, title: data.title, reason: data.reason, critique_score: data.critique_score }, ...s.eliminated],
+          feed: [card('eliminated', data), ...s.feed].slice(0, FEED_CAP),
+        })
+        break
+      }
+      case 'debate_result': {
+        const hyps = { ...s.hypotheses }
+        if (data.a_id && hyps[data.a_id]) hyps[data.a_id] = { ...hyps[data.a_id], elo: data.a_elo }
+        if (data.b_id && hyps[data.b_id]) hyps[data.b_id] = { ...hyps[data.b_id], elo: data.b_elo }
+        set({
+          hypotheses: hyps,
+          debates: [data, ...s.debates].slice(0, 80),
+          feed: [card('debate', data), ...s.feed].slice(0, FEED_CAP),
+        })
+        break
+      }
+      case 'score_updated': {
+        const cur = s.hypotheses[data.id] || {}
+        set({
+          hypotheses: { ...s.hypotheses, [data.id]: { ...cur, discovery_score: data.discovery_score, dimensions: data.dimensions } },
+          feed: [card('score', data), ...s.feed].slice(0, FEED_CAP),
+        })
+        break
+      }
+      case 'run_complete':
+        set({ complete: true, stage: 'complete', progress: 100 })
+        break
+      case 'run_error':
+      case 'agent_error':
+        if (type === 'run_error') set({ error: data.error })
+        break
+      default:
+        break
+    }
+  },
 }))
+
+export { STAGE_ORDER }

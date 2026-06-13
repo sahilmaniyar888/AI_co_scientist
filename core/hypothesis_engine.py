@@ -12,6 +12,9 @@ class HypothesisGenerator:
     def __init__(self, k2_client):
         self.client = k2_client
 
+    # Populated after each call so callers can forward it as an SSE thinking event
+    last_thinking_trace: str = ""
+
     def generate_hypothesis_space(
         self,
         literature_summary: str,
@@ -39,8 +42,10 @@ Generate {num_hypotheses} competing hypotheses."""
 
         response = self.client.chat_with_k2(
             messages=[{"role": "user", "content": user_message}],
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
+            max_tokens=8000,
         )
+        self.last_thinking_trace = response.get("thinking_trace", "")
 
         hypotheses = self._parse_hypotheses(response)
         if hypotheses is not None:
@@ -55,7 +60,10 @@ Generate {num_hypotheses} competing hypotheses."""
             messages=[{"role": "user", "content": user_message}],
             system_prompt=retry_system_prompt,
             temperature=0.2,
+            max_tokens=8000,
         )
+        if not self.last_thinking_trace:
+            self.last_thinking_trace = retry_response.get("thinking_trace", "")
 
         hypotheses = self._parse_hypotheses(retry_response)
         if hypotheses is not None:
@@ -85,15 +93,33 @@ Generate {num_hypotheses} competing hypotheses."""
             if isinstance(parsed, dict):
                 for key in ("hypotheses", "items", "data"):
                     value = parsed.get(key)
-                    if isinstance(value, list):
+                    if isinstance(value, list) and not self._looks_like_placeholder_hypotheses(value):
                         return value
-            if isinstance(parsed, list):
+            if isinstance(parsed, list) and not self._looks_like_placeholder_hypotheses(parsed):
                 return parsed
         return None
+
+    def _looks_like_placeholder_hypotheses(self, items: List[Dict[str, Any]]) -> bool:
+        if not items:
+            return True
+
+        first = items[0]
+        if not isinstance(first, dict):
+            return True
+
+        placeholder_markers = (
+            "A single, clear sentence stating the hypothesis",
+            "Evidence 1 with specific citation or finding",
+            "Contradiction 1 explaining why this might be wrong",
+        )
+        joined = json.dumps(first)
+        return any(marker in joined for marker in placeholder_markers)
 
     def _extract_json_object(self, text: str) -> Optional[Any]:
         """
         Extract JSON list/dict from noisy model output.
+        Prefers the largest JSON array found (most hypotheses) to avoid
+        returning a partial result from early in the model's reasoning trace.
         """
         if not text:
             return None
@@ -111,15 +137,28 @@ Generate {num_hypotheses} competing hypotheses."""
         except json.JSONDecodeError:
             pass
 
-        # Slow path: scan for embedded JSON payload.
+        # Slow path: collect ALL valid JSON objects/arrays embedded in the text,
+        # then return the list with the most items (avoids picking a single
+        # hypothesis dict that appears early in the thinking trace).
         decoder = json.JSONDecoder()
-        for idx, ch in enumerate(text):
-            if ch not in "[{":
+        candidates: list = []
+        idx = 0
+        while idx < len(text):
+            if text[idx] not in "[{":
+                idx += 1
                 continue
             try:
-                obj, _ = decoder.raw_decode(text[idx:])
-                return obj
+                obj, end_idx = decoder.raw_decode(text[idx:])
+                candidates.append(obj)
+                idx += end_idx
             except json.JSONDecodeError:
-                continue
+                idx += 1
 
-        return None
+        if not candidates:
+            return None
+
+        # Prefer the list with the most entries; fall back to first candidate.
+        lists = [c for c in candidates if isinstance(c, list)]
+        if lists:
+            return max(lists, key=len)
+        return candidates[0]

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 import json
 
 from core.prompts import SYSTEM_PROMPTS
@@ -18,13 +18,6 @@ class CodeGenerationAgent:
     ) -> Dict:
         """
         Generate complete Python code to test a hypothesis computationally.
-
-        Args:
-            hypothesis: The hypothesis dict from the Hypothesis Generator
-            domain: Scientific domain (affects what libraries and methods are used)
-
-        Returns:
-            Dict containing generated code, explanation, and expected outputs
         """
 
         system_prompt = SYSTEM_PROMPTS["code_generation"]
@@ -49,6 +42,7 @@ For CRISPR off-target prediction, the code should:
         response = self.client.chat_with_k2(
             messages=[{"role": "user", "content": user_message}],
             system_prompt=system_prompt,
+            temperature=0.2,
         )
 
         code_result = self._extract_json(response["final_response"])
@@ -63,13 +57,6 @@ For CRISPR off-target prediction, the code should:
     ) -> Dict:
         """
         Compare experimental results against published benchmarks from literature.
-
-        Args:
-            hypothesis: The hypothesis being tested
-            experimental_results: Results from running the generated code
-
-        Returns:
-            Dict containing benchmark comparisons and interpretations
         """
 
         system_prompt = SYSTEM_PROMPTS["benchmark_analysis"]
@@ -98,18 +85,14 @@ Compare our results against these benchmarks and interpret the findings."""
             "thinking_trace": response["thinking_trace"],
         }
 
-    # ------------------------------------------------------------------
-    # JSON helpers
-    # ------------------------------------------------------------------
-
     def _extract_json(self, text: str) -> dict:
-        """Extract JSON from a potentially noisy model response."""
+        """Extract the best matching JSON payload from a noisy model response."""
         if not text:
             return {}
 
         text = text.strip()
+        candidates: list[Any] = []
 
-        # Strip markdown code fences
         if text.startswith("```json"):
             text = text[7:]
         if text.startswith("```"):
@@ -118,21 +101,41 @@ Compare our results against these benchmarks and interpret the findings."""
             text = text[:-3]
         text = text.strip()
 
-        # Fast path
         try:
-            return json.loads(text)
+            candidates.append(json.loads(text))
         except json.JSONDecodeError:
             pass
 
-        # Slow path – scan for first JSON object / array
         decoder = json.JSONDecoder()
         for idx, ch in enumerate(text):
             if ch not in "{[":
                 continue
             try:
                 obj, _ = decoder.raw_decode(text[idx:])
-                return obj
+                candidates.append(obj)
             except json.JSONDecodeError:
                 continue
 
+        for candidate in candidates:
+            if self._looks_like_code_payload(candidate):
+                return candidate
+
+        if candidates:
+            return candidates[0]
+
         return {"raw_response": text}
+
+    def _looks_like_code_payload(self, candidate: Any) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+
+        code = str(candidate.get("code", ""))
+        if not code:
+            return False
+
+        placeholder_markers = ("...", "TODO", "your code here")
+        return (
+            "explanation" in candidate
+            and "expected_outputs" in candidate
+            and not any(marker in code for marker in placeholder_markers)
+        )
