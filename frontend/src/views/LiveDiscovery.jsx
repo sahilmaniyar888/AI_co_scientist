@@ -11,7 +11,8 @@ import { ArchetypeBadge } from '../components/Badges'
 const STAGE_LABELS = {
   queued: 'Queued', literature: 'Literature', graph: 'Graph', gaps: 'Gaps',
   contradictions: 'Contradictions', hypothesis_gen: 'Hypotheses', critique: 'Skeptic',
-  tournament: 'Tournament', scoring: 'Scoring', meta_review: 'Meta-Review', complete: 'Done',
+  tournament: 'Tournament', scoring: 'Scoring', enrichment: 'Protocols',
+  meta_review: 'Meta-Review', complete: 'Done',
 }
 
 function StageRail({ stage }) {
@@ -94,7 +95,7 @@ function FeedCard({ c }) {
     )
   }
   if (c.type === 'papers') {
-    return <div className={base}><div className="text-sm text-ink-1">📚 Ingested <span className="text-phosphor font-mono">{c.count}</span> papers from {c.source}</div></div>
+    return <div className={base}><div className="text-sm text-ink-1">📚 Scanned <span className="text-phosphor font-mono">{c.reachable || c.count}</span> papers via {c.source}, analyzing the <span className="text-phosphor font-mono">{c.count}</span> most-cited</div></div>
   }
   if (c.type === 'gaps') {
     return (
@@ -110,6 +111,15 @@ function FeedCard({ c }) {
   }
   if (c.type === 'contradictions') {
     return <div className={base}><div className="text-sm text-ink-1">⚡ Resolved <span style={{ color: 'rgb(255 92 122)' }} className="font-mono">{c.count}</span> contradictions</div></div>
+  }
+  if (c.type === 'enrichment') {
+    return (
+      <div className={base} style={{ borderColor: 'rgb(167 139 250 / 0.22)' }}>
+        <div className="label-mono mb-1.5" style={{ color: 'rgb(167 139 250)' }}>🧪 Protocol + validation plan</div>
+        <div className="text-[13px] text-ink-1 leading-snug">{c.protocol_name || c.title}</div>
+        {c.datasets > 0 && <div className="text-[12px] text-ink-3 mt-1">{c.datasets} public dataset{c.datasets > 1 ? 's' : ''} for computational validation</div>}
+      </div>
+    )
   }
   return null
 }

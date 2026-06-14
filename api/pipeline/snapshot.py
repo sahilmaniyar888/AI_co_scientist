@@ -43,6 +43,7 @@ async def export_run(run_id: str, events: list[dict]) -> dict:
             "debates": await db.get_debates(run_id),
             "scores": await db.get_scores(run_id),
             "graph": await db.get_graph(run_id),
+            "enrichment": await db.get_enrichment(run_id),
         },
     }
 
@@ -100,6 +101,9 @@ async def _materialize(run_id: str, dbsnap: dict, goal: str, config: dict) -> di
         await db.insert_debate(run_id, d)
     for hid, s in dbsnap.get("scores", {}).items():
         await db.insert_score(run_id, rm(hid), s)
+    for hid, e in dbsnap.get("enrichment", {}).items():
+        await db.insert_enrichment(run_id, rm(hid), e.get("protocol", {}),
+                                   e.get("datasets", {}))
     await db.save_graph(run_id, dbsnap.get("graph", {}))
     meta = dbsnap.get("meta", {}) or {}
     if meta.get("roadmap"):

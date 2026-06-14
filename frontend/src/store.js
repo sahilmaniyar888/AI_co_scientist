@@ -5,7 +5,8 @@ const FEED_CAP = 200
 
 const STAGE_ORDER = [
   'queued', 'literature', 'graph', 'gaps', 'contradictions',
-  'hypothesis_gen', 'critique', 'tournament', 'scoring', 'meta_review', 'complete',
+  'hypothesis_gen', 'critique', 'tournament', 'scoring', 'enrichment',
+  'meta_review', 'complete',
 ]
 
 function freshLive() {
@@ -18,6 +19,7 @@ function freshLive() {
     progress: 0,
     memoryUsed: false,
     papersCount: 0,
+    reachable: 0,
     gapsCount: 0,
     contradictionsCount: 0,
     agents: {},          // name -> { status, ts }
@@ -58,8 +60,8 @@ export const useStore = create((set, get) => ({
         set({ stage: data.stage, stageLabel: data.label, progress: data.progress })
         break
       case 'papers_loaded':
-        set({ papersCount: data.count })
-        set({ feed: [card('papers', { count: data.count, source: data.source }), ...s.feed].slice(0, FEED_CAP) })
+        set({ papersCount: data.count, reachable: data.reachable || data.count })
+        set({ feed: [card('papers', { count: data.count, reachable: data.reachable, source: data.source }), ...s.feed].slice(0, FEED_CAP) })
         break
       case 'agent_started':
         set({ agents: { ...s.agents, [data.agent]: { status: 'thinking', ts: Date.now() } } })
@@ -129,6 +131,9 @@ export const useStore = create((set, get) => ({
         })
         break
       }
+      case 'enrichment_ready':
+        set({ feed: [card('enrichment', data), ...s.feed].slice(0, FEED_CAP) })
+        break
       case 'run_complete':
         set({ complete: true, stage: 'complete', progress: 100 })
         break

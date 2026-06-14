@@ -24,6 +24,7 @@ DEMOS = [
         "or inflammatory pathways. Focus on drugs already approved for other fibrotic "
         "conditions.",
         "source": "PubMed",
+        "active": True,
         "search_queries": [
             "TGF-beta liver fibrosis stellate cell activation",
             "liver fibrosis drug repurposing approved compounds",
@@ -45,6 +46,9 @@ DEMOS = [
         "strategies to overcome ionic conductivity and interface stability limitations "
         "in solid-state lithium battery electrolytes.",
         "source": "ArXiv",
+        # Hidden from the demo list: its recording degraded during a K2 outage.
+        # Config + cached papers kept so it can be re-recorded and re-enabled later.
+        "active": False,
         "search_queries": [
             "LLZO garnet solid electrolyte ionic conductivity grain boundary",
             "LGPS sulfide solid electrolyte interface stability lithium",
@@ -60,11 +64,15 @@ DEMOS = [
 DEMO_BY_ID = {d["id"]: d for d in DEMOS}
 
 
-def load_cached_papers(demo_id: str) -> list[dict]:
+def load_cached_papers(demo_id: str) -> dict:
+    """Return {"reachable": int, "papers": [...]} (handles legacy list format)."""
     path = CACHE_DIR / f"{demo_id}.json"
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return []
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return {"reachable": len(data), "papers": data}
+    return data
 
 
 # ---------- live fetch (used for custom non-demo goals) ----------

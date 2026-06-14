@@ -185,10 +185,12 @@ Return ONLY valid JSON (no preamble, no fences):
 Find 1-4 genuine contradictions (only if they truly exist) and 3-6 gap seeds."""
 
 
-async def knowledge_graph(run_id: str, papers: list[dict], bus: Any) -> dict:
-    graph = build_keyword_graph(papers)
-    # Bounded LLM pass for contradictions + gap seeds. Keep input compact —
-    # K2-Think's reasoning time scales steeply with how much text it must read.
+async def literature_analysis(run_id: str, papers: list[dict], bus: Any) -> dict:
+    """LLM pass over abstracts → contradictions + gap seeds + themes.
+
+    The citation graph itself is built separately (openalex.build_citation_graph)
+    with no LLM cost; this call only does the semantic reasoning over abstracts.
+    """
     summary = "\n\n".join(
         f"[{p.get('title','')[:120]}] {(p.get('abstract','') or '')[:260]}"
         for p in papers[:8]
@@ -197,13 +199,12 @@ async def knowledge_graph(run_id: str, papers: list[dict], bus: Any) -> dict:
     out = await _agent(run_id, "Knowledge Graph", ANALYZE_SYS, user, bus,
                        temperature=0.5, max_tokens=16000)
     if isinstance(out, dict):
-        graph["contradictions"] = out.get("contradictions", []) or []
-        graph["gaps_seed"] = out.get("gaps_seed", []) or []
-        graph["key_themes"] = out.get("key_themes", []) or []
-    else:
-        graph["contradictions"] = []
-        graph["gaps_seed"] = []
-    return graph
+        return {
+            "contradictions": out.get("contradictions", []) or [],
+            "gaps_seed": out.get("gaps_seed", []) or [],
+            "key_themes": out.get("key_themes", []) or [],
+        }
+    return {"contradictions": [], "gaps_seed": [], "key_themes": []}
 
 
 # ------------------------------------------------------- Gap discovery
@@ -225,18 +226,24 @@ Return ONLY valid JSON:
 
 
 async def gap_discovery(run_id: str, graph: dict, bus: Any) -> list[dict]:
-    concepts = [n.get("label") for n in graph.get("nodes", [])]
     seeds = [f"{s.get('title','')}: {s.get('opportunity','')}"
              for s in graph.get("gaps_seed", [])]
+    structural = [s.get("description", "") for s in graph.get("structural_gaps", [])]
     user = (
-        f"Key concepts in this field: {concepts}\n\n"
-        f"Themes: {graph.get('key_themes', [])}\n\n"
+        f"Field themes: {graph.get('key_themes', [])}\n\n"
         f"Candidate gap seeds: {seeds}\n\n"
-        "Identify the most valuable research gaps."
+        f"Structural (citation) signals: {structural}\n\n"
+        "Identify the most valuable, specific research gaps."
     )
     out = await _agent(run_id, "Gap Discovery", GAP_SYS, user, bus,
                        temperature=0.7, max_tokens=16000)
-    gaps = out.get("gaps", []) if isinstance(out, dict) else []
+    if isinstance(out, dict):
+        gaps = out.get("gaps") or out.get("research_gaps") or out.get("results") or []
+    elif isinstance(out, list):
+        gaps = out
+    else:
+        gaps = []
+    gaps = [g for g in gaps if isinstance(g, dict) and g.get("title")]
     for i, g in enumerate(gaps):
         g.setdefault("id", f"gap_{i+1}")
     return gaps
@@ -520,3 +527,62 @@ async def meta_review(run_id: str, goal: str, stats: dict, top: list[dict],
     out = await _agent(run_id, "Meta-Review", META_SYS, user, bus,
                        temperature=0.5, max_tokens=16000)
     return out if isinstance(out, dict) else {}
+
+
+# ------------------------------------------------------- Experiment protocol
+PROTOCOL_SYS = """You are an expert experimental scientist. Generate a concise, actionable
+validation protocol a lab could start tomorrow. Be specific but BRIEF. Return ONLY valid JSON:
+{
+  "experiment_type": "in_vitro|in_vivo|computational|clinical",
+  "protocol_name": str,
+  "objective": str (1 sentence),
+  "materials": [{"item": str, "quantity": str, "estimated_cost_usd": number}] (4-6 items),
+  "steps": [{"step_number": int, "title": str, "duration": str, "procedure": str (1-2 sentences), "critical_parameter": str}] (4-6 steps),
+  "controls": {"positive": str, "negative": str},
+  "readouts": [{"measurement": str, "instrument": str}] (2-3),
+  "timeline": {"total_duration": str},
+  "budget_estimate": {"low_usd": int, "high_usd": int},
+  "if_positive_then": str (1 sentence),
+  "if_negative_then": str (1 sentence)
+}
+Keep every field short. No preamble, no fences, no markdown."""
+
+
+async def protocol(run_id: str, h: dict, domain: str, bus: Any) -> dict:
+    user = (
+        f"Domain: {domain}\nHypothesis: {h.get('title','')}\n"
+        f"Statement: {h.get('statement','')}\nMechanism: {h.get('mechanism','')}"
+    )
+    out = await _agent(run_id, "Protocol Designer", PROTOCOL_SYS, user, bus,
+                       temperature=0.5, max_tokens=18000)
+    return out if isinstance(out, dict) else {}
+
+
+# ------------------------------------------------------- Dataset matching
+DATASET_SYS = """You help scientists validate hypotheses computationally using existing
+public datasets — avoiding costly new experiments. Given a hypothesis and a list of
+available datasets, select those that could provide supporting or refuting evidence
+WITHOUT new wet-lab work, and specify the exact analysis. Return ONLY valid JSON:
+{
+  "validation_possible": boolean,
+  "summary": str,
+  "datasets": [{"accession": str, "title": str, "source": str, "why_relevant": str,
+                "analysis": str, "expected_signal": str}]
+}
+Only include genuinely relevant datasets. No preamble, no fences."""
+
+
+async def dataset_match(run_id: str, h: dict, datasets: list[dict], bus: Any) -> dict:
+    if not datasets:
+        return {"validation_possible": False, "summary": "No public datasets found.", "datasets": []}
+    ds_txt = "\n".join(
+        f"- [{d.get('source')}] {d.get('accession','')}: {d.get('title','')[:120]}"
+        f" ({d.get('detail','')[:80]})" for d in datasets[:18]
+    )
+    user = (
+        f"Hypothesis: {h.get('title','')}\nStatement: {h.get('statement','')}\n\n"
+        f"Available datasets:\n{ds_txt}"
+    )
+    out = await _agent(run_id, "Dataset Scout", DATASET_SYS, user, bus,
+                       temperature=0.4, max_tokens=9000)
+    return out if isinstance(out, dict) else {"validation_possible": False, "datasets": []}

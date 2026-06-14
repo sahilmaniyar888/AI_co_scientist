@@ -8,15 +8,17 @@ const ROLE_COLOR = {
   contradiction: '255 92 122',
   hypothesis: '70 229 181',
   hub: '91 140 255',
-  concept: '167 139 250',
+  paper: '167 139 250',
 }
 
-function classify(node, contraText, hypText) {
-  const l = (node.label || '').toLowerCase()
-  if (l && contraText.includes(l)) return 'contradiction'
-  if (l && hypText.includes(l)) return 'hypothesis'
+// A paper node is "in a contradiction" if its title matches a contradiction's
+// cited paper, "in a top hypothesis" if a top hypothesis cites it as evidence.
+function classify(node, contraTitles, hypEvidence) {
+  const t = (node.full_title || node.label || '').toLowerCase().slice(0, 36)
+  if (t && contraTitles.some((c) => c.includes(t.slice(0, 24)) || t.includes(c.slice(0, 24)))) return 'contradiction'
+  if (t && hypEvidence.some((e) => e.includes(t.slice(0, 24)) || t.includes(e.slice(0, 24)))) return 'hypothesis'
   if ((node._degree || 0) >= 4) return 'hub'
-  return 'concept'
+  return 'paper'
 }
 
 function ForceGraph({ nodes, edges, onSelect, selected }) {
@@ -91,10 +93,10 @@ function ForceGraph({ nodes, edges, onSelect, selected }) {
 }
 
 const LEGEND = [
-  ['rgb(70 229 181)', 'In a top hypothesis'],
+  ['rgb(70 229 181)', 'Cited by a top hypothesis'],
   ['rgb(255 92 122)', 'In a contradiction'],
-  ['rgb(91 140 255)', 'Hub concept (highly connected)'],
-  ['rgb(167 139 250)', 'Concept'],
+  ['rgb(91 140 255)', 'Hub paper (highly connected)'],
+  ['rgb(167 139 250)', 'Paper'],
 ]
 
 export default function KnowledgeGraph() {
@@ -113,16 +115,19 @@ export default function KnowledgeGraph() {
     const edges = graph.edges || []
     const degree = {}
     edges.forEach((e) => { degree[e.source] = (degree[e.source] || 0) + 1; degree[e.target] = (degree[e.target] || 0) + 1 })
-    const contraText = (graph.contradictions || [])
-      .map((c) => `${c.claim || ''} ${c.explanation || ''} ${c.reasoning || ''}`).join(' ').toLowerCase()
+    const contraTitles = (graph.contradictions || [])
+      .flatMap((c) => [c.paper_a, c.paper_b]).filter(Boolean).map((s) => s.toLowerCase())
     const top = [...hyps].filter((h) => h.status !== 'eliminated')
       .sort((a, b) => b.elo_score - a.elo_score).slice(0, 6)
-    const hypText = top.map((h) => `${h.title || ''} ${h.statement || ''} ${h.mechanism || ''}`).join(' ').toLowerCase()
+    const hypEvidence = top.flatMap((h) => h.supporting_evidence || []).map((s) => String(s).toLowerCase())
+    const maxCites = Math.max(1, ...(graph.nodes || []).map((n) => n.cited_by_count || 0))
     const nodes = (graph.nodes || []).slice(0, 60).map((n) => {
       const deg = degree[n.id] || 0
       const base = { ...n, _degree: deg }
-      const role = classify(base, contraText, hypText)
-      return { ...base, _role: role, _color: ROLE_COLOR[role], _r: 6 + Math.min(13, deg * 1.8) }
+      const role = classify(base, contraTitles, hypEvidence)
+      const citeScale = Math.log1p(n.cited_by_count || 0) / Math.log1p(maxCites)
+      return { ...base, _role: role, _color: ROLE_COLOR[role],
+               _r: 7 + citeScale * 15 + Math.min(6, deg) }
     })
     return { nodes, edges }
   }, [graph, hyps])
@@ -135,8 +140,8 @@ export default function KnowledgeGraph() {
     <div className="h-full flex flex-col">
       <div className="shrink-0 px-7 py-5 border-b hairline flex items-end justify-between flex-wrap gap-3">
         <div>
-          <h1 className="font-display text-2xl text-ink-0">Knowledge Graph</h1>
-          <p className="text-ink-2 text-sm mt-1">{nodes.length} concepts · {edges.length} relationships · node size = connectivity</p>
+          <h1 className="font-display text-2xl text-ink-0">Citation Network</h1>
+          <p className="text-ink-2 text-sm mt-1">{nodes.length} papers · {edges.length} citation links · node size = times cited</p>
         </div>
         <div className="flex gap-2">
           {[['hypothesis', 'in top hyp'], ['contradiction', 'contested'], ['hub', 'hubs']].map(([k, lbl]) => (
@@ -157,13 +162,14 @@ export default function KnowledgeGraph() {
             ))}
           </div>
           {sel && (
-            <div className="absolute bottom-4 left-4 panel panel-raised p-4 max-w-xs animate-in">
-              <div className="label-mono" style={{ color: `rgb(${sel._color})` }}>{sel._role}</div>
-              <div className="text-ink-0 font-medium mt-1">{sel.label || sel.id}</div>
-              <div className="text-[12px] text-ink-2 mt-1 font-mono">~{sel.paper_count || 1} papers · {sel._degree} links</div>
+            <div className="absolute bottom-4 left-4 panel panel-raised p-4 max-w-sm animate-in">
+              <div className="label-mono" style={{ color: `rgb(${sel._color})` }}>{sel._role === 'paper' ? 'paper' : sel._role}</div>
+              <div className="text-ink-0 font-medium mt-1 leading-snug text-[13px]">{sel.full_title || sel.label}</div>
+              <div className="text-[12px] text-ink-2 mt-1.5 font-mono">{sel.cited_by_count ?? 0} citations · {sel.year || '—'} · {sel._degree} links</div>
+              {sel.venue && <div className="text-[11px] text-ink-3 mt-1 italic truncate">{sel.venue}</div>}
               {sel.neighbors?.length > 0 && (
                 <div className="mt-2 text-[11px] text-ink-2 leading-snug">
-                  <span className="label-mono">connected: </span>{sel.neighbors.slice(0, 6).join(', ')}
+                  <span className="label-mono">connected: </span>{sel.neighbors.length} papers
                 </div>
               )}
               <button onClick={() => setSel(null)} className="label-mono mt-2 hover:text-phosphor">close</button>

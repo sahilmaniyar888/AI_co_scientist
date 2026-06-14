@@ -185,7 +185,7 @@ async def _stream_call(
     return "".join(chunks)
 
 
-MAX_TOKEN_CEILING = 20000
+MAX_TOKEN_CEILING = 26000
 
 
 async def call_json(

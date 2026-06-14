@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowLeft, FlaskConical, ShieldAlert, Swords, Microscope } from 'lucide-react'
+import { ArrowLeft, FlaskConical, ShieldAlert, Swords, Microscope, ClipboardList, Database, ExternalLink } from 'lucide-react'
 import { getHypothesis, getDebates } from '../lib/api'
 import { ArchetypeBadge, GenBadge } from '../components/Badges'
 import ScoreRing from '../components/ScoreRing'
@@ -137,6 +137,105 @@ export default function DiscoveryCard() {
                   <div key={label}>
                     <div className="label-mono mb-1">{label}</div>
                     <ul className="space-y-1">{items.slice(0, 3).map((x, i) => <li key={i} className="text-[12px] text-ink-2 leading-snug">· {x}</li>)}</ul>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          </div>
+        )}
+
+        {/* experiment protocol */}
+        {h.protocol?.steps?.length > 0 && (
+          <div className="mt-3.5">
+            <Section icon={ClipboardList} title="Experiment protocol — start tomorrow" color="70 229 181">
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                <div className="text-[15px] text-ink-0 font-medium">{h.protocol.protocol_name}</div>
+                <div className="flex gap-2">
+                  <span className="chip">{h.protocol.experiment_type?.replace(/_/g, ' ')}</span>
+                  {h.protocol.timeline?.total_duration && <span className="chip">{h.protocol.timeline.total_duration}</span>}
+                  {h.protocol.budget_estimate && (
+                    <span className="chip" style={{ color: 'rgb(245 181 71)', borderColor: 'rgb(245 181 71 / 0.3)' }}>
+                      ${h.protocol.budget_estimate.low_usd?.toLocaleString()}–{h.protocol.budget_estimate.high_usd?.toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              </div>
+              {h.protocol.objective && <p className="text-[13px] text-ink-1 leading-relaxed mb-4">{h.protocol.objective}</p>}
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div>
+                  <div className="label-mono mb-2">Procedure</div>
+                  <ol className="space-y-2.5">
+                    {h.protocol.steps.map((s) => (
+                      <li key={s.step_number} className="flex gap-3">
+                        <span className="font-mono text-phosphor shrink-0 text-sm">{String(s.step_number).padStart(2, '0')}</span>
+                        <div>
+                          <div className="text-[13px] text-ink-0">{s.title} <span className="text-ink-3 font-mono text-[11px]">· {s.duration}</span></div>
+                          <div className="text-[12px] text-ink-2 leading-snug mt-0.5">{s.procedure}</div>
+                          {s.critical_parameter && <div className="text-[11px] mt-0.5" style={{ color: 'rgb(245 181 71)' }}>⚠ {s.critical_parameter}</div>}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+                <div className="space-y-4">
+                  {h.protocol.materials?.length > 0 && (
+                    <div>
+                      <div className="label-mono mb-2">Materials</div>
+                      <div className="space-y-1">
+                        {h.protocol.materials.map((m, i) => (
+                          <div key={i} className="flex items-center justify-between text-[12px] panel px-2.5 py-1.5">
+                            <span className="text-ink-1">{m.item} <span className="text-ink-3">{m.quantity}</span></span>
+                            {m.estimated_cost_usd != null && <span className="font-mono text-ink-2">${Number(m.estimated_cost_usd).toLocaleString()}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {h.protocol.controls && (
+                    <div>
+                      <div className="label-mono mb-1.5">Controls</div>
+                      <div className="text-[12px] text-ink-2 space-y-0.5">
+                        {h.protocol.controls.positive && <div><span className="text-phosphor">+</span> {h.protocol.controls.positive}</div>}
+                        {h.protocol.controls.negative && <div><span style={{ color: 'rgb(255 92 122)' }}>−</span> {h.protocol.controls.negative}</div>}
+                      </div>
+                    </div>
+                  )}
+                  {h.protocol.readouts?.length > 0 && (
+                    <div>
+                      <div className="label-mono mb-1.5">Readouts</div>
+                      <ul className="text-[12px] text-ink-2 space-y-0.5">
+                        {h.protocol.readouts.map((r, i) => <li key={i}>· {r.measurement} <span className="text-ink-3">({r.instrument})</span></li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {(h.protocol.if_positive_then || h.protocol.if_negative_then) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 pt-3 border-t hairline">
+                  {h.protocol.if_positive_then && <div className="text-[12px]"><span className="label-mono" style={{ color: 'rgb(70 229 181)' }}>if positive → </span><span className="text-ink-1">{h.protocol.if_positive_then}</span></div>}
+                  {h.protocol.if_negative_then && <div className="text-[12px]"><span className="label-mono" style={{ color: 'rgb(255 92 122)' }}>if negative → </span><span className="text-ink-1">{h.protocol.if_negative_then}</span></div>}
+                </div>
+              )}
+            </Section>
+          </div>
+        )}
+
+        {/* computational validation */}
+        {h.datasets?.datasets?.length > 0 && (
+          <div className="mt-3.5">
+            <Section icon={Database} title="Computational validation — test it today" color="91 140 255">
+              {h.datasets.summary && <p className="text-[13px] text-ink-1 leading-relaxed mb-3">{h.datasets.summary}</p>}
+              <div className="space-y-2.5">
+                {h.datasets.datasets.map((d, i) => (
+                  <div key={i} className="panel p-3.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="chip" style={{ color: 'rgb(91 140 255)', borderColor: 'rgb(91 140 255 / 0.3)' }}>{d.source}</span>
+                      <span className="font-mono text-[12px] text-ink-1">{d.accession}</span>
+                      <span className="text-[13px] text-ink-0">{d.title}</span>
+                    </div>
+                    {d.why_relevant && <p className="text-[12px] text-ink-2 mt-1.5 leading-snug">{d.why_relevant}</p>}
+                    {d.analysis && <p className="text-[12px] mt-1 leading-snug" style={{ color: 'rgb(91 140 255)' }}>▸ {d.analysis}</p>}
                   </div>
                 ))}
               </div>

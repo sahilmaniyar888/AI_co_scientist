@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS knowledge_graph (
   run_id TEXT PRIMARY KEY, nodes_json TEXT, edges_json TEXT,
   contradictions_json TEXT, gaps_json TEXT, created_at REAL
 );
+CREATE TABLE IF NOT EXISTS enrichment (
+  hypothesis_id TEXT PRIMARY KEY, run_id TEXT,
+  protocol_json TEXT, datasets_json TEXT, created_at REAL
+);
 """
 
 
@@ -101,7 +105,7 @@ async def clear_run(run_id: str) -> None:
     """Delete all rows for a run (used before re-recording a demo snapshot)."""
     async with aiosqlite.connect(DB_PATH) as db:
         for tbl in ("runs", "papers", "hypotheses", "debates", "scores",
-                    "agent_logs", "knowledge_graph"):
+                    "agent_logs", "knowledge_graph", "enrichment"):
             col = "id" if tbl == "runs" else "run_id"
             await db.execute(f"DELETE FROM {tbl} WHERE {col}=?", (run_id,))
         await db.commit()
@@ -300,6 +304,32 @@ async def get_scores(run_id: str) -> dict[str, dict]:
         d = dict(r)
         d["rationale"] = _loads(d.pop("rationale_json"), {})
         out[d["hypothesis_id"]] = d
+    return out
+
+
+# ---------- enrichment (protocols + datasets) ----------
+async def insert_enrichment(run_id: str, hid: str, protocol: Any,
+                            datasets: Any) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO enrichment (hypothesis_id, run_id, protocol_json,"
+            " datasets_json, created_at) VALUES (?,?,?,?,?)",
+            (hid, run_id, _j(protocol), _j(datasets), _now()),
+        )
+        await db.commit()
+
+
+async def get_enrichment(run_id: str) -> dict[str, dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM enrichment WHERE run_id=?", (run_id,))
+        rows = await cur.fetchall()
+    out = {}
+    for r in rows:
+        out[r["hypothesis_id"]] = {
+            "protocol": _loads(r["protocol_json"], {}),
+            "datasets": _loads(r["datasets_json"], {}),
+        }
     return out
 
 

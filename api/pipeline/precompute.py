@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from pathlib import Path
@@ -27,6 +28,51 @@ from api.pipeline.bus import EventBus  # noqa: E402
 # Modest scope keeps the one-time recording reliable while still rich.
 MAX_HYP = 10
 ROUNDS = 2
+
+
+def _audit_snapshot(snap: dict) -> list[str]:
+    """Detect a degenerate recording caused by mid-run K2 failures.
+
+    When the K2 API drops out partway through a recording, the pipeline's
+    try/except fallbacks fill in placeholders ("Score unavailable.",
+    "Defaulted (judge parse error).", empty protocols). The run still
+    "completes" and would silently overwrite a good snapshot. This audit
+    returns a list of fatal problems so the caller can refuse to save.
+    """
+    db_ = snap["db"]
+    problems: list[str] = []
+
+    scores = db_.get("scores", {}) or {}
+    score_rows = list(scores.values()) if isinstance(scores, dict) else list(scores)
+    if not score_rows:
+        problems.append("no scored hypotheses")
+    else:
+        dead = sum(
+            1 for s in score_rows
+            if "Score unavailable" in json.dumps(s.get("rationale", ""))
+        )
+        if dead > len(score_rows) // 2:
+            problems.append(
+                f"{dead}/{len(score_rows)} scores are placeholders (K2 scoring failed)"
+            )
+
+    debates = db_.get("debates", []) or []
+    deb_rows = list(debates.values()) if isinstance(debates, dict) else list(debates)
+    if deb_rows:
+        dead_deb = sum(1 for d in deb_rows if not (d.get("a_argument") or "").strip())
+        if dead_deb > len(deb_rows) // 2:
+            problems.append(
+                f"{dead_deb}/{len(deb_rows)} debates are defaulted (K2 judge failed)"
+            )
+
+    enrichment = db_.get("enrichment", {}) or {}
+    enr_rows = list(enrichment.values()) if isinstance(enrichment, dict) else list(enrichment)
+    if enr_rows:
+        empty = sum(1 for e in enr_rows if not (e.get("protocol") or {}))
+        if empty == len(enr_rows):
+            problems.append("all enrichment protocols are empty (K2 protocol agent failed)")
+
+    return problems
 
 
 async def record(demo_id: str) -> None:
@@ -59,13 +105,23 @@ async def record(demo_id: str) -> None:
     await w
 
     snap = await snapshot.export_run(run_id, bus.history)
-    snapshot.save_snapshot(demo_id, snap)
     n_ev = len(bus.history)
     n_hyp = len(snap["db"]["hypotheses"])
     n_deb = len(snap["db"]["debates"])
-    print(f"  SAVED {demo_id}: {time.time()-t0:.0f}s | {n_ev} events | "
-          f"{n_hyp} hyps | {n_deb} debates | "
-          f"{len(snap['db']['scores'])} scored", flush=True)
+    summary = (f"{time.time()-t0:.0f}s | {n_ev} events | {n_hyp} hyps | "
+               f"{n_deb} debates | {len(snap['db']['scores'])} scored")
+
+    problems = _audit_snapshot(snap)
+    if problems:
+        print(f"  REJECTED {demo_id}: {summary}", flush=True)
+        for p in problems:
+            print(f"    - {p}", flush=True)
+        print("    -> existing snapshot left untouched; re-run when K2 is healthy.",
+              flush=True)
+        raise RuntimeError(f"degenerate recording for {demo_id}: {'; '.join(problems)}")
+
+    snapshot.save_snapshot(demo_id, snap)
+    print(f"  SAVED {demo_id}: {summary}", flush=True)
 
 
 async def main() -> None:

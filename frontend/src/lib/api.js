@@ -34,9 +34,10 @@ export function streamRun(runId, onEvent) {
   const types = [
     'run_started', 'plan', 'stage', 'papers_loaded', 'literature_done',
     'agent_started', 'agent_thinking', 'agent_output', 'agent_error',
-    'gaps_done', 'contradictions_done', 'hypothesis_added',
+    'graph_done', 'gaps_done', 'contradictions_done', 'hypothesis_added',
     'hypothesis_critiqued', 'hypothesis_eliminated', 'debate_result',
-    'round_done', 'score_updated', 'run_complete', 'run_error', 'stream_end',
+    'round_done', 'score_updated', 'datasets_found', 'enrichment_ready',
+    'run_complete', 'run_error', 'stream_end',
   ]
   for (const t of types) {
     es.addEventListener(t, (e) => {

@@ -65,6 +65,7 @@ async def get_demos() -> list[dict]:
         {k: d[k] for k in ("id", "title", "domain", "description", "goal",
                            "max_hypotheses", "debate_rounds", "source")}
         for d in demos.DEMOS
+        if d.get("active", True)
     ]
 
 
@@ -164,6 +165,9 @@ async def hypothesis_detail(run_id: str, hid: str) -> dict:
     debates = [d for d in await db.get_debates(run_id)
                if d["hyp_a_id"] == hid or d["hyp_b_id"] == hid]
     h["debates"] = debates
+    enr = (await db.get_enrichment(run_id)).get(hid, {})
+    h["protocol"] = enr.get("protocol")
+    h["datasets"] = enr.get("datasets")
     return {"hypothesis": h}
 
 

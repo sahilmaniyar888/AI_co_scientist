@@ -14,7 +14,7 @@ import asyncio
 import random
 from typing import Any
 
-from . import agents, db, demos, snapshot
+from . import agents, datasets, db, demos, openalex, snapshot
 from .bus import EventBus
 
 K_FACTOR = 32
@@ -30,9 +30,18 @@ STAGES = [
     ("critique", "Skeptic Review"),
     ("tournament", "Elo Tournament"),
     ("scoring", "Discovery Scoring"),
+    ("enrichment", "Protocols & Datasets"),
     ("meta_review", "Meta-Review"),
     ("complete", "Complete"),
 ]
+
+_BIO_HINTS = ("bio", "med", "cancer", "disease", "drug", "clinical", "cell", "gene",
+              "protein", "fibrosis", "viral", "immun", "patholog", "pharmac", "hepat")
+
+
+def _is_bio(domain: str) -> bool:
+    d = (domain or "").lower()
+    return any(h in d for h in _BIO_HINTS)
 
 
 def _expected(a: float, b: float) -> float:
@@ -98,23 +107,38 @@ async def _run(run_id: str, goal: str, config: dict, bus: EventBus,
     # per-paper extraction call (each K2-Think call is 40-100s, so 14 of them
     # would dominate the run). Concept extraction happens inside the graph step.
     await _emit_stage(bus, run_id, "literature", "Literature Scout")
-    raw_papers = await _load_papers(demo_id, plan, config, bus)
+    raw_papers, run_reachable = await _load_papers(demo_id, plan, config, bus)
     await bus.emit("papers_loaded", {"count": len(raw_papers),
-                                     "source": config.get("source", "mixed")})
+                                     "reachable": run_reachable,
+                                     "source": "OpenAlex"})
     papers = []
     for p in raw_papers:
         pid = await db.insert_paper(run_id, p)
         p["id"] = pid
         papers.append(p)
-    await bus.emit("literature_done", {"papers": len(papers)})
+    await bus.emit("literature_done", {"papers": len(papers), "reachable": run_reachable})
 
     # ---- Stage 2: Knowledge graph ----
+    # The citation network is built from OpenAlex data (no LLM); the LLM only
+    # reasons over abstracts for contradictions and gap seeds.
     await _emit_stage(bus, run_id, "graph", "Knowledge Graph")
-    graph = await agents.knowledge_graph(run_id, papers, bus)
+    cgraph = openalex.build_citation_graph(papers)
+    analysis = await agents.literature_analysis(run_id, papers, bus)
+    graph = {
+        "nodes": cgraph["nodes"], "edges": cgraph["edges"],
+        "structural_gaps": cgraph["structural_gaps"],
+        "contradictions": analysis["contradictions"],
+        "gaps_seed": analysis["gaps_seed"], "key_themes": analysis["key_themes"],
+    }
+    await bus.emit("graph_done", {"nodes": len(cgraph["nodes"]),
+                                  "edges": len(cgraph["edges"]),
+                                  "reachable": run_reachable})
 
     # ---- Stage 3: Gaps ----
     await _emit_stage(bus, run_id, "gaps", "Gap Discovery")
     gaps = await agents.gap_discovery(run_id, graph, bus)
+    # Surface citation-derived structural gaps alongside the LLM ones.
+    gaps = (gaps or []) + graph.get("structural_gaps", [])
     graph["gaps"] = gaps
     await bus.emit("gaps_done", {"count": len(gaps),
                                  "gaps": [{"title": g.get("title"),
@@ -183,6 +207,10 @@ async def _run(run_id: str, goal: str, config: dict, bus: EventBus,
     top10 = sorted(active, key=lambda h: h["elo_score"], reverse=True)[:8]
     await _score_hypotheses(run_id, top10, bus)
 
+    # ---- Stage 8.5: Enrichment (protocols + computational validation) ----
+    await _emit_stage(bus, run_id, "enrichment", "Protocols & Datasets")
+    await _enrich_top(run_id, goal, domain, top10[:3], bus)
+
     # ---- Stage 9: Meta-review ----
     await _emit_stage(bus, run_id, "meta_review", "Meta-Review")
     scores = await db.get_scores(run_id)
@@ -220,30 +248,31 @@ async def _run(run_id: str, goal: str, config: dict, bus: EventBus,
 
 
 async def _load_papers(demo_id: str, plan: dict, config: dict,
-                       bus: EventBus) -> list[dict]:
+                       bus: EventBus) -> tuple[list[dict], int]:
+    """Return (papers, reachable_count). Demos use the OpenAlex-sourced cache."""
     if demo_id:
         cached = demos.load_cached_papers(demo_id)
         if cached:
-            return cached
-    # Live fetch for custom goals.
+            return cached.get("papers", []), cached.get("reachable", len(cached.get("papers", [])))
+    # Live fetch for custom goals — OpenAlex (deep, citation-ranked).
+    queries = plan.get("search_queries", []) or [config.get("title", "")]
+    try:
+        corpus = await openalex.gather_corpus(queries, per_query=25, keep=16)
+        if corpus["papers"]:
+            return corpus["papers"], corpus["reachable"]
+    except Exception:
+        pass
+    # Fallback to PubMed/ArXiv if OpenAlex is unavailable.
     source = (config.get("source") or "").lower()
-    queries = plan.get("search_queries", [])[:5]
     fetch = demos.fetch_arxiv if "arxiv" in source else demos.fetch_pubmed
     all_papers: list[dict] = []
-    for q in queries:
+    for q in queries[:5]:
         try:
-            got = await fetch(q, 5)
-            all_papers += got
+            all_papers += await fetch(q, 5)
         except Exception:
             continue
-    if not all_papers and fetch is demos.fetch_pubmed:
-        # Fallback to arxiv if pubmed yielded nothing.
-        for q in queries:
-            try:
-                all_papers += await demos.fetch_arxiv(q, 5)
-            except Exception:
-                continue
-    return demos.dedup(all_papers)[:14]
+    papers = demos.dedup(all_papers)[:14]
+    return papers, len(papers)
 
 
 def _cscore(crit: dict) -> float:
@@ -385,3 +414,33 @@ async def _score_hypotheses(run_id: str, top: list[dict], bus: EventBus) -> None
             await _score_one(run_id, h, bus)
 
     await asyncio.gather(*[_wrap(h) for h in top], return_exceptions=True)
+
+
+async def _enrich_top(run_id: str, goal: str, domain: str, top: list[dict],
+                      bus: EventBus) -> None:
+    """Generate an experiment protocol + computational-validation plan per top hyp."""
+    if not top:
+        return
+    bio = _is_bio(domain)
+    # One dataset search for the run; matched per-hypothesis by the LLM.
+    try:
+        found = await datasets.discover(goal[:120], bio=bio)
+    except Exception:
+        found = []
+    await bus.emit("datasets_found", {"count": len(found), "bio": bio})
+
+    async def _one(h):
+        proto, dmatch = await asyncio.gather(
+            agents.protocol(run_id, h, domain, bus),
+            agents.dataset_match(run_id, h, found, bus),
+            return_exceptions=True,
+        )
+        proto = proto if isinstance(proto, dict) else {}
+        dmatch = dmatch if isinstance(dmatch, dict) else {}
+        await db.insert_enrichment(run_id, h["id"], proto, dmatch)
+        await bus.emit("enrichment_ready", {
+            "id": h["id"], "title": h.get("title"),
+            "protocol_name": proto.get("protocol_name"),
+            "datasets": len(dmatch.get("datasets", []))})
+
+    await asyncio.gather(*[_one(h) for h in top], return_exceptions=True)
