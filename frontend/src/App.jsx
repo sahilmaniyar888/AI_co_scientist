@@ -1,6 +1,7 @@
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Shell from './components/Shell'
 import MissionControl from './views/MissionControl'
+import DiscoveryArena from './views/DiscoveryArena'
 import LiveDiscovery from './views/LiveDiscovery'
 import HypothesisPortfolio from './views/HypothesisPortfolio'
 import TournamentViewer from './views/TournamentViewer'
@@ -14,6 +15,7 @@ export default function App() {
       <Routes>
         <Route element={<Shell />}>
           <Route path="/" element={<MissionControl />} />
+          <Route path="/run/:runId/arena" element={<DiscoveryArena />} />
           <Route path="/run/:runId/live" element={<LiveDiscovery />} />
           <Route path="/run/:runId/portfolio" element={<HypothesisPortfolio />} />
           <Route path="/run/:runId/tournament" element={<TournamentViewer />} />

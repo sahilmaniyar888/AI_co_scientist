@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Telescope, Radio, FlaskConical, Swords, Share2, Map, Plus, HelpCircle,
+  Telescope, Radio, FlaskConical, Swords, Share2, Map, Plus, HelpCircle, Orbit,
 } from 'lucide-react'
 import Tour, { shouldAutoOpenTour } from './Tour'
 
 const NAV = [
+  { to: 'arena', label: 'Discovery Arena', icon: Orbit },
   { to: 'live', label: 'Live Discovery', icon: Radio },
   { to: 'portfolio', label: 'Hypotheses', icon: FlaskConical },
   { to: 'tournament', label: 'Tournament', icon: Swords },

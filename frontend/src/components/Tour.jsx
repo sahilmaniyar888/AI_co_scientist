@@ -13,7 +13,7 @@ const STEPS = [
   {
     icon: Radio, color: '91 140 255',
     title: 'Watch K2 think, live',
-    body: 'Nine specialized agents run a cyclical pipeline. Their reasoning streams to you in real time — the green readout is K2-Think working through the problem, not a progress bar.',
+    body: 'More than a dozen specialized agents run a cyclical pipeline. Their reasoning streams to you in real time — the green readout is K2-Think working through the problem, not a progress bar.',
   },
   {
     icon: ShieldAlert, color: '255 92 122',
@@ -27,8 +27,8 @@ const STEPS = [
   },
   {
     icon: Gauge, color: '167 139 250',
-    title: 'Scored on five dimensions',
-    body: 'The top hypotheses are scored on evidence, novelty, feasibility, impact and reproducibility — weighted toward evidence so the result is credible, not just exciting.',
+    title: 'Three grounded reality checks',
+    body: 'Before scoring, every top hypothesis faces due diligence against live sources: is it novel (vs. the published literature), has it already been tried and failed (ClinicalTrials.gov), and is the mechanism even coherent? Recombinations and implausible ideas are penalized — then scored on five weighted dimensions.',
   },
   {
     icon: Map, color: '70 229 181',
@@ -93,5 +93,8 @@ export default function Tour({ open, onClose }) {
 }
 
 export function shouldAutoOpenTour() {
-  try { return !localStorage.getItem('de_tour_seen') } catch { return false }
+  try {
+    if (location.hash.includes('notour')) return false
+    return !localStorage.getItem('de_tour_seen')
+  } catch { return false }
 }

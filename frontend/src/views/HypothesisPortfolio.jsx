@@ -14,11 +14,18 @@ const SORTS = [
   { key: 'feasibility', label: 'Feasibility' },
 ]
 
+const VERDICT_COLOR = {
+  novel: '70 229 181', incremental: '125 211 252',
+  recombination: '245 181 71', known: '255 92 122',
+}
+
+const PLAUS_COLOR = { coherent: '70 229 181', uncertain: '245 181 71', incoherent: '255 92 122' }
+
 export default function HypothesisPortfolio() {
   const { runId } = useParams()
   const navigate = useNavigate()
   const [hyps, setHyps] = useState([])
-  const [sort, setSort] = useState('elo')
+  const [sort, setSort] = useState('discovery')
   const [archFilter, setArchFilter] = useState(null)
   const [showElim, setShowElim] = useState(false)
 
@@ -100,6 +107,21 @@ export default function HypothesisPortfolio() {
                 <h3 className="text-[15px] text-ink-0 mt-2.5 leading-snug font-medium line-clamp-2 group-hover:text-phosphor transition">{h.title}</h3>
                 <p className="text-[12px] text-ink-2 mt-1.5 leading-snug line-clamp-2 flex-1">{h.statement}</p>
 
+                {(h.novelty?.verdict || h.prior_failure?.verdict || h.plausibility?.verdict) && (
+                  <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                    {h.novelty?.verdict && (
+                      <span className="chip" style={{ fontSize: '0.6rem', color: `rgb(${VERDICT_COLOR[h.novelty.verdict] || VERDICT_COLOR.incremental})`, borderColor: `rgb(${VERDICT_COLOR[h.novelty.verdict] || VERDICT_COLOR.incremental} / 0.4)` }}>
+                        ⌖ {h.novelty.verdict}
+                      </span>
+                    )}
+                    {h.prior_failure?.verdict && h.prior_failure.verdict !== 'untested' && (
+                      <span className="chip" style={{ fontSize: '0.6rem', color: 'rgb(245 181 71)', borderColor: 'rgb(245 181 71 / 0.4)' }}>⚕ {h.prior_failure.verdict.replace(/_/g, ' ')}</span>
+                    )}
+                    {h.plausibility?.verdict && (
+                      <span className="chip" style={{ fontSize: '0.6rem', color: `rgb(${PLAUS_COLOR[h.plausibility.verdict] || PLAUS_COLOR.uncertain})`, borderColor: `rgb(${PLAUS_COLOR[h.plausibility.verdict] || PLAUS_COLOR.uncertain} / 0.4)` }}>⚛ {h.plausibility.verdict}</span>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center justify-between mt-3 mb-2.5">
                   <GenBadge type={h.generation_type} parents={h.parent_ids} />
                   {d.discovery_score != null && (

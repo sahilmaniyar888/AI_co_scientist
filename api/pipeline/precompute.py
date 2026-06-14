@@ -72,6 +72,15 @@ def _audit_snapshot(snap: dict) -> list[str]:
         if empty == len(enr_rows):
             problems.append("all enrichment protocols are empty (K2 protocol agent failed)")
 
+    novelty = db_.get("novelty", {}) or {}
+    nov_rows = list(novelty.values()) if isinstance(novelty, dict) else list(novelty)
+    if not nov_rows:
+        problems.append("no grounded novelty results (prior-art stage produced nothing)")
+    else:
+        empty_nv = sum(1 for n in nov_rows if not (n.get("novelty") or {}))
+        if empty_nv == len(nov_rows):
+            problems.append("all novelty checks are empty (K2 novelty verifier failed)")
+
     return problems
 
 

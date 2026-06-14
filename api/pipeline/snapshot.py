@@ -44,6 +44,9 @@ async def export_run(run_id: str, events: list[dict]) -> dict:
             "scores": await db.get_scores(run_id),
             "graph": await db.get_graph(run_id),
             "enrichment": await db.get_enrichment(run_id),
+            "novelty": await db.get_novelty(run_id),
+            "prior_failure": await db.get_prior_failure(run_id),
+            "plausibility": await db.get_plausibility(run_id),
         },
     }
 
@@ -104,6 +107,14 @@ async def _materialize(run_id: str, dbsnap: dict, goal: str, config: dict) -> di
     for hid, e in dbsnap.get("enrichment", {}).items():
         await db.insert_enrichment(run_id, rm(hid), e.get("protocol", {}),
                                    e.get("datasets", {}))
+    for hid, nv in dbsnap.get("novelty", {}).items():
+        await db.insert_novelty(run_id, rm(hid), nv.get("novelty", {}),
+                                nv.get("prior_art", []))
+    for hid, pf in dbsnap.get("prior_failure", {}).items():
+        await db.insert_prior_failure(run_id, rm(hid), pf.get("failure", {}),
+                                      pf.get("trials", []))
+    for hid, pl in dbsnap.get("plausibility", {}).items():
+        await db.insert_plausibility(run_id, rm(hid), pl)
     await db.save_graph(run_id, dbsnap.get("graph", {}))
     meta = dbsnap.get("meta", {}) or {}
     if meta.get("roadmap"):
@@ -125,6 +136,11 @@ _PACE = {
     "hypothesis_added": 0.22,
     "debate_result": 0.45,
     "score_updated": 0.4,
+    "novelty_checked": 0.45,
+    "prior_failure_checked": 0.45,
+    "plausibility_checked": 0.45,
+    "datasets_found": 0.3,
+    "enrichment_ready": 0.4,
     "hypothesis_eliminated": 0.3,
     "hypothesis_critiqued": 0.05,
     "agent_started": 0.05,

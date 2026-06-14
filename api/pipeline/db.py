@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS enrichment (
   hypothesis_id TEXT PRIMARY KEY, run_id TEXT,
   protocol_json TEXT, datasets_json TEXT, created_at REAL
 );
+CREATE TABLE IF NOT EXISTS novelty (
+  hypothesis_id TEXT PRIMARY KEY, run_id TEXT,
+  novelty_json TEXT, prior_art_json TEXT, created_at REAL
+);
+CREATE TABLE IF NOT EXISTS prior_failure (
+  hypothesis_id TEXT PRIMARY KEY, run_id TEXT,
+  failure_json TEXT, trials_json TEXT, created_at REAL
+);
+CREATE TABLE IF NOT EXISTS plausibility (
+  hypothesis_id TEXT PRIMARY KEY, run_id TEXT,
+  plausibility_json TEXT, created_at REAL
+);
 """
 
 
@@ -105,7 +117,8 @@ async def clear_run(run_id: str) -> None:
     """Delete all rows for a run (used before re-recording a demo snapshot)."""
     async with aiosqlite.connect(DB_PATH) as db:
         for tbl in ("runs", "papers", "hypotheses", "debates", "scores",
-                    "agent_logs", "knowledge_graph", "enrichment"):
+                    "agent_logs", "knowledge_graph", "enrichment", "novelty",
+                    "prior_failure", "plausibility"):
             col = "id" if tbl == "runs" else "run_id"
             await db.execute(f"DELETE FROM {tbl} WHERE {col}=?", (run_id,))
         await db.commit()
@@ -331,6 +344,77 @@ async def get_enrichment(run_id: str) -> dict[str, dict]:
             "datasets": _loads(r["datasets_json"], {}),
         }
     return out
+
+
+# ---------- novelty (grounded prior-art verification) ----------
+async def insert_novelty(run_id: str, hid: str, novelty: Any,
+                         prior_art: Any) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO novelty (hypothesis_id, run_id, novelty_json,"
+            " prior_art_json, created_at) VALUES (?,?,?,?,?)",
+            (hid, run_id, _j(novelty), _j(prior_art), _now()),
+        )
+        await db.commit()
+
+
+async def get_novelty(run_id: str) -> dict[str, dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM novelty WHERE run_id=?", (run_id,))
+        rows = await cur.fetchall()
+    out = {}
+    for r in rows:
+        out[r["hypothesis_id"]] = {
+            "novelty": _loads(r["novelty_json"], {}),
+            "prior_art": _loads(r["prior_art_json"], []),
+        }
+    return out
+
+
+# ---------- prior failure (clinical-trial reality check) ----------
+async def insert_prior_failure(run_id: str, hid: str, failure: Any,
+                               trials: Any) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO prior_failure (hypothesis_id, run_id, failure_json,"
+            " trials_json, created_at) VALUES (?,?,?,?,?)",
+            (hid, run_id, _j(failure), _j(trials), _now()),
+        )
+        await db.commit()
+
+
+async def get_prior_failure(run_id: str) -> dict[str, dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM prior_failure WHERE run_id=?", (run_id,))
+        rows = await cur.fetchall()
+    out = {}
+    for r in rows:
+        out[r["hypothesis_id"]] = {
+            "failure": _loads(r["failure_json"], {}),
+            "trials": _loads(r["trials_json"], []),
+        }
+    return out
+
+
+# ---------- plausibility (mechanistic coherence) ----------
+async def insert_plausibility(run_id: str, hid: str, plausibility: Any) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO plausibility (hypothesis_id, run_id,"
+            " plausibility_json, created_at) VALUES (?,?,?,?)",
+            (hid, run_id, _j(plausibility), _now()),
+        )
+        await db.commit()
+
+
+async def get_plausibility(run_id: str) -> dict[str, dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM plausibility WHERE run_id=?", (run_id,))
+        rows = await cur.fetchall()
+    return {r["hypothesis_id"]: _loads(r["plausibility_json"], {}) for r in rows}
 
 
 # ---------- knowledge graph ----------

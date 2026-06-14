@@ -148,10 +148,32 @@ async def run_state(run_id: str) -> dict:
 async def run_hypotheses(run_id: str) -> dict:
     hyps = await db.get_hypotheses(run_id)
     scores = await db.get_scores(run_id)
+    novelty = await db.get_novelty(run_id)
+    failure = await db.get_prior_failure(run_id)
+    plausibility = await db.get_plausibility(run_id)
     for h in hyps:
         s = scores.get(h["id"])
         if s:
             h["scores"] = s
+        nv = (novelty.get(h["id"]) or {}).get("novelty")
+        if nv:
+            h["novelty"] = {
+                "novelty_score": nv.get("novelty_score"),
+                "verdict": nv.get("verdict"),
+                "recombination_penalty": nv.get("recombination_penalty"),
+            }
+        pf = (failure.get(h["id"]) or {}).get("failure")
+        if pf:
+            h["prior_failure"] = {
+                "verdict": pf.get("verdict"),
+                "already_tried": pf.get("already_tried"),
+            }
+        pl = plausibility.get(h["id"])
+        if pl:
+            h["plausibility"] = {
+                "plausibility_score": pl.get("plausibility_score"),
+                "verdict": pl.get("verdict"),
+            }
     return {"hypotheses": hyps}
 
 
@@ -168,6 +190,13 @@ async def hypothesis_detail(run_id: str, hid: str) -> dict:
     enr = (await db.get_enrichment(run_id)).get(hid, {})
     h["protocol"] = enr.get("protocol")
     h["datasets"] = enr.get("datasets")
+    nov = (await db.get_novelty(run_id)).get(hid, {})
+    h["novelty"] = nov.get("novelty")
+    h["prior_art"] = nov.get("prior_art")
+    pf = (await db.get_prior_failure(run_id)).get(hid, {})
+    h["prior_failure"] = pf.get("failure")
+    h["trials"] = pf.get("trials")
+    h["plausibility"] = (await db.get_plausibility(run_id)).get(hid)
     return {"hypothesis": h}
 
 

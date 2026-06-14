@@ -307,6 +307,12 @@ Each hypothesis must be specific enough to design an experiment tomorrow.
 "X may affect Y" is too vague. "Inhibiting pathway X in cell type Y reduces marker
 Z by >30% under condition W" is specific.
 
+Stay anchored to the RESEARCH GOAL. If the goal concerns drug repurposing or therapeutics,
+most hypotheses must name a SPECIFIC, real, clinically-available drug or compound (e.g. a
+named approved agent), not a generic or speculative delivery vehicle — these are the ideas a
+lab can actually test and that have real clinical track records. Keep at most one or two
+ideas centered on novel delivery platforms.
+
 Generate hypotheses ONLY for these archetypes: {ARCHS}
 
 Return ONLY a JSON array (no preamble, no fences), each element:
@@ -492,6 +498,200 @@ async def score_dimension(run_id: str, h: dict, dim: str, bus: Any) -> dict:
         out["score"] = max(0, min(100, float(out.get("score", 50))))
     except Exception:
         out["score"] = 50.0
+    return out
+
+
+# ------------------------------------------------------- Grounded novelty / prior-art
+NOVELTY_SYS = """You are a rigorous prior-art analyst. You are given a hypothesis and a list of
+REAL existing papers retrieved from the literature. Judge how novel the hypothesis actually is
+AGAINST THIS SPECIFIC PRIOR ART — not in the abstract. Decompose the hypothesis into its
+component claims/mechanisms and check whether each already appears in the retrieved papers, and
+whether the specific combination is already published.
+
+Be skeptical. A hypothesis that merely recombines well-established components is NOT novel even
+if the exact combination is new — combinatorial novelty is the weakest kind and must be
+penalized. Reserve high novelty scores for genuinely unprecedented claims or mechanisms with no
+close analog in the retrieved papers. Cite ONLY papers from the provided list.
+
+Return ONLY valid JSON:
+{
+  "novelty_score": int,            // 0-100. 0=already published, 100=no prior art found at all
+  "verdict": "known|recombination|incremental|novel",
+  "recombination_penalty": int,    // 0-40 points to subtract from the discovery score
+  "components_known": [str],       // hypothesis components already present in the prior art
+  "novel_element": str,            // the one element (if any) NOT found in prior art; "" if none
+  "closest_prior_art": [{"title": str, "year": int, "overlap": str}],  // up to 4, from the list
+  "assessment": str                // 2-3 honest sentences on why this score
+}
+No preamble, no markdown fences."""
+
+
+PRIOR_ART_QUERY_SYS = """You decompose a scientific hypothesis into literature search queries
+that will surface PRIOR ART. A single search on the whole construct finds nothing, so break it
+into its building blocks. Output 4-6 concise queries (3-7 words each, keyword style, no boolean
+operators) that a librarian would use to check whether each component — AND the overall
+combination — has already been published. Cover: each individual mechanism/component, key
+entity+context pairs, and the full combination. Return ONLY JSON: {"queries": [str, ...]}
+No preamble, no markdown fences."""
+
+
+async def prior_art_queries(run_id: str, h: dict, bus: Any) -> list[str]:
+    """Decompose a hypothesis into component search queries for prior-art retrieval."""
+    user = (f"Hypothesis: {h.get('title','')}\nStatement: {h.get('statement','')}\n"
+            f"Mechanism: {h.get('mechanism','')}")
+    out = await _agent(run_id, "Prior-Art Search", PRIOR_ART_QUERY_SYS, user, bus,
+                       temperature=0.3, max_tokens=4000)
+    qs = out.get("queries") if isinstance(out, dict) else None
+    qs = [q.strip() for q in qs if isinstance(q, str) and len(q.strip()) > 4] if isinstance(qs, list) else []
+    if h.get("title"):  # always include the full construct as a combination query
+        qs.append(h["title"])
+    # de-dup preserving order
+    seen: set[str] = set()
+    uniq = []
+    for q in qs:
+        k = q.lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(q)
+    return uniq[:7]
+
+
+async def novelty_check(run_id: str, h: dict, prior_art: list[dict], bus: Any) -> dict:
+    """Ground a hypothesis's novelty against real retrieved prior art."""
+    if not prior_art:
+        return {
+            "novelty_score": 60, "verdict": "novel", "recombination_penalty": 0,
+            "components_known": [], "novel_element": "", "closest_prior_art": [],
+            "assessment": "No prior art retrieved; novelty could not be grounded "
+                          "against the literature.",
+        }
+    refs = "\n".join(
+        f"[{i+1}] {p.get('title','')} ({p.get('year','?')}, "
+        f"{p.get('cited_by_count',0)} cites)\n    {(p.get('abstract','') or '')[:320]}"
+        for i, p in enumerate(prior_art)
+    )
+    user = (
+        f"HYPOTHESIS\nTitle: {h.get('title','')}\nStatement: {h.get('statement','')}\n"
+        f"Mechanism: {h.get('mechanism','')}\n\n"
+        f"RETRIEVED PRIOR ART ({len(prior_art)} papers):\n{refs}"
+    )
+    out = await _agent(run_id, "Novelty Verifier", NOVELTY_SYS, user, bus,
+                       temperature=0.3, max_tokens=9000)
+    if not isinstance(out, dict):
+        return {}
+    try:
+        out["novelty_score"] = max(0.0, min(100.0, float(out.get("novelty_score", 50))))
+    except (TypeError, ValueError):
+        out["novelty_score"] = 50.0
+    try:
+        out["recombination_penalty"] = max(0.0, min(40.0,
+                                           float(out.get("recombination_penalty", 0))))
+    except (TypeError, ValueError):
+        out["recombination_penalty"] = 0.0
+    return out
+
+
+# ------------------------------------------------------- Mechanistic plausibility
+PLAUSIBILITY_SYS = """You are a mechanistic plausibility auditor. Given a hypothesis and real
+retrieved papers, judge whether the proposed MECHANISM is biologically coherent — independent of
+novelty and independent of prior trials. A novel, never-tried idea can still be mechanistically
+impossible.
+
+Check concrete failure modes:
+- Is the molecular target actually expressed in the relevant cell type / tissue?
+- Is the proposed direction of effect consistent with established biology?
+- Does any retrieved paper contradict a step in the mechanism?
+- Are the causal links real, or is a step hand-waved?
+
+Use the retrieved papers as evidence where relevant; otherwise reason from established biology.
+Return ONLY valid JSON:
+{
+  "plausibility_score": int,   // 0-100; 100=mechanism fully coherent, 0=cannot work as stated
+  "verdict": "coherent|uncertain|incoherent",
+  "penalty": int,              // 0-30 points to subtract from the discovery score
+  "key_factors": [str],        // mechanistic facts that support OR undermine the hypothesis
+  "concerns": [str],           // specific mechanistic risks (e.g. "target not expressed in HSCs")
+  "assessment": str            // 2-3 honest sentences
+}
+No preamble, no markdown fences."""
+
+
+async def plausibility_check(run_id: str, h: dict, prior_art: list[dict], bus: Any) -> dict:
+    """Judge whether a hypothesis's mechanism is biologically coherent."""
+    refs = ""
+    if prior_art:
+        refs = "\n\nRETRIEVED PAPERS (evidence):\n" + "\n".join(
+            f"[{i+1}] {p.get('title','')} ({p.get('year','?')})\n    {(p.get('abstract','') or '')[:280]}"
+            for i, p in enumerate(prior_art[:8])
+        )
+    user = (
+        f"HYPOTHESIS\nTitle: {h.get('title','')}\nStatement: {h.get('statement','')}\n"
+        f"Mechanism: {h.get('mechanism','')}{refs}"
+    )
+    out = await _agent(run_id, "Plausibility Auditor", PLAUSIBILITY_SYS, user, bus,
+                       temperature=0.3, max_tokens=9000)
+    if not isinstance(out, dict):
+        return {}
+    try:
+        out["plausibility_score"] = max(0.0, min(100.0, float(out.get("plausibility_score", 50))))
+    except (TypeError, ValueError):
+        out["plausibility_score"] = 50.0
+    try:
+        out["penalty"] = max(0.0, min(30.0, float(out.get("penalty", 0))))
+    except (TypeError, ValueError):
+        out["penalty"] = 0.0
+    return out
+
+
+# ------------------------------------------------------- Prior-failure / reality check
+PRIOR_FAILURE_SYS = """You are a clinical-evidence auditor. You are given a therapeutic hypothesis
+and a list of REAL clinical trials retrieved from ClinicalTrials.gov. Determine whether the
+proposed intervention has ALREADY been tried for this (or a closely related) condition, and
+whether those attempts failed (status TERMINATED / WITHDRAWN / SUSPENDED, or a stated reason for
+stopping). Distinguish a genuinely untested idea from one that has already flopped in a trial.
+
+Use ONLY the provided trials. Do not invent NCT numbers. If none of the trials actually match the
+intervention+condition of the hypothesis, say it is untested.
+
+Return ONLY valid JSON:
+{
+  "verdict": "untested|in_progress|failed_before|mixed|established",
+  "already_tried": boolean,
+  "caution": str,                  // one-line risk flag for a researcher; "" if untested
+  "relevant_trials": [             // up to 4, from the provided list ONLY
+     {"nct_id": str, "status": str, "what_it_tells_us": str}
+  ],
+  "assessment": str                // 2-3 honest sentences
+}
+No preamble, no markdown fences."""
+
+
+async def prior_failure_check(run_id: str, h: dict, trials: list[dict], bus: Any) -> dict:
+    """Judge whether a hypothesis's intervention was already clinically tried/failed."""
+    if not trials:
+        return {
+            "verdict": "untested", "already_tried": False, "caution": "",
+            "relevant_trials": [],
+            "assessment": "No registered clinical trials were found for this intervention "
+                          "and condition — the approach appears clinically untested.",
+        }
+    listing = "\n".join(
+        f"[{i+1}] {t.get('nct_id')} | status={t.get('status')}"
+        f"{' (FAILED)' if t.get('failed') else ''} | phase={t.get('phase') or 'n/a'}\n"
+        f"    {t.get('title','')}\n"
+        f"    interventions: {', '.join(t.get('interventions', [])[:4]) or 'n/a'}"
+        f"{' | why stopped: ' + t['why_stopped'] if t.get('why_stopped') else ''}"
+        for i, t in enumerate(trials)
+    )
+    user = (
+        f"HYPOTHESIS\nTitle: {h.get('title','')}\nStatement: {h.get('statement','')}\n\n"
+        f"RETRIEVED CLINICAL TRIALS ({len(trials)}):\n{listing}"
+    )
+    out = await _agent(run_id, "Trial Auditor", PRIOR_FAILURE_SYS, user, bus,
+                       temperature=0.3, max_tokens=8000)
+    if not isinstance(out, dict):
+        return {}
+    out["already_tried"] = bool(out.get("already_tried"))
     return out
 
 

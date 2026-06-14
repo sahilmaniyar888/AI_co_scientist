@@ -1,11 +1,17 @@
 import { create } from 'zustand'
+import { streamRun } from './lib/api'
 
 const THINK_CAP = 7000
 const FEED_CAP = 200
 
+// The live stream is owned at module scope, NOT by the LiveDiscovery component, so it
+// keeps running to completion even when the user navigates to other views and back.
+let _activeRunId = null
+let _activeClose = null
+
 const STAGE_ORDER = [
   'queued', 'literature', 'graph', 'gaps', 'contradictions',
-  'hypothesis_gen', 'critique', 'tournament', 'scoring', 'enrichment',
+  'hypothesis_gen', 'critique', 'tournament', 'novelty', 'scoring', 'enrichment',
   'meta_review', 'complete',
 ]
 
@@ -42,6 +48,17 @@ export const useStore = create((set, get) => ({
 
   resetLive(runId, goal) {
     set({ ...freshLive(), runId, goal })
+  },
+
+  // Start (or resume) the live stream for a run. Idempotent: calling it again for the
+  // same run does NOTHING — so navigating away and back never restarts the replay.
+  // The stream runs to completion regardless of which view is mounted.
+  startStream(runId) {
+    if (_activeRunId === runId) return
+    if (_activeClose) { try { _activeClose() } catch { /* noop */ } _activeClose = null }
+    _activeRunId = runId
+    set({ ...freshLive(), runId })
+    _activeClose = streamRun(runId, (ev) => get().applyEvent(ev))
   },
 
   applyEvent({ type, data }) {
@@ -128,6 +145,37 @@ export const useStore = create((set, get) => ({
         set({
           hypotheses: { ...s.hypotheses, [data.id]: { ...cur, discovery_score: data.discovery_score, dimensions: data.dimensions } },
           feed: [card('score', data), ...s.feed].slice(0, FEED_CAP),
+        })
+        break
+      }
+      case 'novelty_checked': {
+        const cur = s.hypotheses[data.id] || {}
+        set({
+          hypotheses: { ...s.hypotheses, [data.id]: { ...cur, novelty: {
+            novelty_score: data.novelty_score, verdict: data.verdict,
+            recombination_penalty: data.recombination_penalty,
+          } } },
+          feed: [card('novelty', data), ...s.feed].slice(0, FEED_CAP),
+        })
+        break
+      }
+      case 'prior_failure_checked': {
+        const cur = s.hypotheses[data.id] || {}
+        set({
+          hypotheses: { ...s.hypotheses, [data.id]: { ...cur, prior_failure: {
+            verdict: data.verdict, already_tried: data.already_tried,
+          } } },
+          feed: [card('prior_failure', data), ...s.feed].slice(0, FEED_CAP),
+        })
+        break
+      }
+      case 'plausibility_checked': {
+        const cur = s.hypotheses[data.id] || {}
+        set({
+          hypotheses: { ...s.hypotheses, [data.id]: { ...cur, plausibility: {
+            plausibility_score: data.plausibility_score, verdict: data.verdict,
+          } } },
+          feed: [card('plausibility', data), ...s.feed].slice(0, FEED_CAP),
         })
         break
       }

@@ -176,6 +176,36 @@ code, pre, .font-mono { font-family: 'IBM Plex Mono', monospace; }
 
 .glow-text { text-shadow: 0 0 12px rgba(70, 229, 181, 0.28); }
 
+/* arena: living hypothesis nodes breathe */
+.arena-breathe {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: breathe 3.4s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.5; }
+  50% { transform: scale(1.5); opacity: 0.12; }
+}
+
+/* arena: energy flowing along evolution lineage */
+.lineage-flow { animation: lineage-flow 0.9s linear infinite; }
+@keyframes lineage-flow { to { stroke-dashoffset: -12; } }
+
+/* arena: halo rings slowly rotate (diagnostic sweep) */
+.halo-spin {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: halo-spin 18s linear infinite;
+}
+@keyframes halo-spin { to { transform: rotate(360deg); } }
+
+/* funnel bar fill */
+.funnel-bar { transition: width 700ms cubic-bezier(0.22, 1, 0.36, 1); }
+
+/* count-up emphasis pulse */
+.stat-pop { animation: stat-pop 360ms ease-out; }
+@keyframes stat-pop { 0% { transform: scale(1.25); } 100% { transform: scale(1); } }
+
 .scan {
   position: relative; overflow: hidden;
 }

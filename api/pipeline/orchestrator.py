@@ -14,7 +14,7 @@ import asyncio
 import random
 from typing import Any
 
-from . import agents, datasets, db, demos, openalex, snapshot
+from . import agents, datasets, db, demos, openalex, snapshot, trials
 from .bus import EventBus
 
 K_FACTOR = 32
@@ -29,6 +29,7 @@ STAGES = [
     ("hypothesis_gen", "Hypothesis Generation"),
     ("critique", "Skeptic Review"),
     ("tournament", "Elo Tournament"),
+    ("novelty", "Reality Check"),
     ("scoring", "Discovery Scoring"),
     ("enrichment", "Protocols & Datasets"),
     ("meta_review", "Meta-Review"),
@@ -201,10 +202,18 @@ async def _run(run_id: str, goal: str, config: dict, bus: EventBus,
             if new_ones:
                 await _critique_pool(run_id, new_ones, pool, bus)
 
-    # ---- Stage 8: Discovery scoring ----
-    await _emit_stage(bus, run_id, "scoring", "Discovery Scoring")
+    # ---- Stage 7.5: Grounded novelty / prior-art verification ----
+    # The headline trustworthiness feature: every surviving hypothesis is checked
+    # against REAL retrieved literature, so the novelty score reflects actual prior
+    # art (and recombination is penalized) rather than the model's self-opinion.
+    await _emit_stage(bus, run_id, "novelty", "Reality Check")
     active = [h for h in pool.values() if h.get("status", "active") == "active"]
     top10 = sorted(active, key=lambda h: h["elo_score"], reverse=True)[:8]
+    await _verify_novelty(run_id, top10, bus)
+
+    # ---- Stage 8: Discovery scoring ----
+    # Uses the grounded novelty dimension + recombination penalty from the step above.
+    await _emit_stage(bus, run_id, "scoring", "Discovery Scoring")
     await _score_hypotheses(run_id, top10, bus)
 
     # ---- Stage 8.5: Enrichment (protocols + computational validation) ----
@@ -379,8 +388,75 @@ async def _tournament_round(run_id: str, active: list[dict], rnd: int,
             "a_elo": round(a["elo_score"]), "b_elo": round(b["elo_score"])})
 
 
+async def _verify_novelty(run_id: str, top: list[dict], bus: EventBus) -> None:
+    """Retrieve real prior art per hypothesis and ground its novelty against it.
+
+    Two K2 calls per hypothesis (decompose -> judge) plus an OpenAlex multi-search
+    in between; bounded concurrency keeps the stage to a few minutes.
+    """
+    sem = asyncio.Semaphore(4)
+
+    async def _one(h):
+        async with sem:
+            # Decompose once, then reuse the component queries for BOTH the
+            # literature prior-art search and the clinical-trial reality check.
+            try:
+                queries = await agents.prior_art_queries(run_id, h, bus)
+            except Exception:
+                queries = [h.get("title", "")]
+            try:
+                prior_art = await openalex.prior_art_search(queries, n_per=6, keep=10)
+            except Exception:
+                prior_art = []
+            try:
+                found_trials = await trials.search_trials(queries, n_per=8, keep=12)
+            except Exception:
+                found_trials = []
+
+            nv = await agents.novelty_check(run_id, h, prior_art, bus)
+            if not isinstance(nv, dict):
+                nv = {}
+            h["novelty"] = nv
+            await db.insert_novelty(run_id, h["id"], nv, prior_art)
+            await bus.emit("novelty_checked", {
+                "id": h["id"], "title": h.get("title"),
+                "novelty_score": nv.get("novelty_score"),
+                "verdict": nv.get("verdict"),
+                "recombination_penalty": nv.get("recombination_penalty"),
+                "prior_art_count": len(prior_art)})
+
+            pf = await agents.prior_failure_check(run_id, h, found_trials, bus)
+            if not isinstance(pf, dict):
+                pf = {}
+            h["prior_failure"] = pf
+            await db.insert_prior_failure(run_id, h["id"], pf, found_trials)
+            await bus.emit("prior_failure_checked", {
+                "id": h["id"], "title": h.get("title"),
+                "verdict": pf.get("verdict"),
+                "already_tried": pf.get("already_tried"),
+                "trials_count": len(found_trials),
+                "failed_count": sum(1 for t in found_trials if t.get("failed"))})
+
+            pl = await agents.plausibility_check(run_id, h, prior_art, bus)
+            if not isinstance(pl, dict):
+                pl = {}
+            h["plausibility"] = pl
+            await db.insert_plausibility(run_id, h["id"], pl)
+            await bus.emit("plausibility_checked", {
+                "id": h["id"], "title": h.get("title"),
+                "plausibility_score": pl.get("plausibility_score"),
+                "verdict": pl.get("verdict"),
+                "penalty": pl.get("penalty")})
+
+    await asyncio.gather(*[_one(h) for h in top], return_exceptions=True)
+
+
 async def _score_one(run_id: str, h: dict, bus: EventBus) -> None:
-    dims = list(agents._DIM_PROMPTS.keys())
+    # Grounded novelty (from the prior-art stage) is authoritative: skip the
+    # self-judged novelty call and use the literature-grounded score instead.
+    grounded = h.get("novelty") if isinstance(h.get("novelty"), dict) else None
+    use_grounded = bool(grounded and grounded.get("novelty_score") is not None)
+    dims = [d for d in agents._DIM_PROMPTS if not (use_grounded and d == "novelty")]
     results = await asyncio.gather(
         *[agents.score_dimension(run_id, h, d, bus) for d in dims],
         return_exceptions=True,
@@ -395,14 +471,56 @@ async def _score_one(run_id: str, h: dict, bus: EventBus) -> None:
         score_row[dim] = val
         rationale[dim] = res
         weighted += agents.SCORE_WEIGHTS[dim] * val
-    score_row["discovery_score"] = round(weighted, 1)
+
+    penalty = 0.0
+    if use_grounded:
+        nov = float(grounded.get("novelty_score", 50))
+        score_row["novelty"] = nov
+        weighted += agents.SCORE_WEIGHTS["novelty"] * nov
+        rationale["novelty"] = {
+            "score": nov, "grounded": True,
+            "verdict": grounded.get("verdict"),
+            "rationale": grounded.get("assessment", ""),
+            "recombination_penalty": grounded.get("recombination_penalty", 0),
+            "closest_prior_work": "; ".join(
+                f"{p.get('title','')} ({p.get('year','?')})"
+                for p in (grounded.get("closest_prior_art") or [])[:3]),
+        }
+        try:
+            penalty = float(grounded.get("recombination_penalty", 0) or 0)
+        except (TypeError, ValueError):
+            penalty = 0.0
+
+    # Mechanistic-plausibility penalty (from the Reality-Check stage).
+    plaus = h.get("plausibility") if isinstance(h.get("plausibility"), dict) else None
+    plaus_penalty = 0.0
+    if plaus:
+        try:
+            plaus_penalty = float(plaus.get("penalty", 0) or 0)
+        except (TypeError, ValueError):
+            plaus_penalty = 0.0
+        rationale["plausibility"] = {
+            "score": plaus.get("plausibility_score"),
+            "verdict": plaus.get("verdict"),
+            "penalty": plaus_penalty,
+            "rationale": plaus.get("assessment", ""),
+        }
+
+    # Novelty is already discounted inside the (grounded) novelty dimension, so we do
+    # NOT subtract the recombination penalty again — that would double-count it. The
+    # plausibility penalty is the only explicit deduction (plausibility is not a dim).
+    score_row["discovery_score"] = round(max(0.0, weighted - plaus_penalty), 1)
+    score_row["recombination_penalty"] = round(penalty, 1)
+    score_row["plausibility_penalty"] = round(plaus_penalty, 1)
     score_row["rationale"] = rationale
     await db.insert_score(run_id, h["id"], score_row)
     h["discovery_score"] = score_row["discovery_score"]
     await bus.emit("score_updated", {
         "id": h["id"], "title": h.get("title"),
         "discovery_score": score_row["discovery_score"],
-        "dimensions": {d: score_row[d] for d in dims}})
+        "recombination_penalty": score_row["recombination_penalty"],
+        "plausibility_penalty": score_row["plausibility_penalty"],
+        "dimensions": {d: score_row.get(d) for d in agents._DIM_PROMPTS}})
 
 
 async def _score_hypotheses(run_id: str, top: list[dict], bus: EventBus) -> None:

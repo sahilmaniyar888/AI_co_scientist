@@ -102,6 +102,38 @@ async def gather_corpus(queries: list[str], per_query: int = 25,
     return {"reachable": len(ranked), "papers": ranked[:keep]}
 
 
+async def prior_art_search(queries: list[str], n_per: int = 6,
+                           keep: int = 10) -> list[dict]:
+    """Retrieve the closest existing published work for one hypothesis.
+
+    Backs the grounded novelty verifier. The key is to search the hypothesis's
+    *components* separately — a single search on the whole ultra-specific
+    construct ("CXCR4- and integrin-decorated EVs delivering miR-29b to HSCs")
+    matches nothing, but searching each building block (miR-29b + fibrosis,
+    CXCR4-targeted delivery, EV miR delivery to stellate cells, ...) surfaces the
+    real prior art. Queries come from an LLM decomposition of the hypothesis.
+    """
+    queries = [q.strip() for q in queries if isinstance(q, str) and len(q.strip()) > 4][:8]
+    if not queries:
+        return []
+    async with httpx.AsyncClient(timeout=30, headers=HEADERS, follow_redirects=True) as c:
+        results = await asyncio.gather(
+            *[_search_one(c, q, n_per) for q in queries],
+            return_exceptions=True,
+        )
+    seen: set[str] = set()
+    found: list[dict] = []
+    for r in results:
+        if not isinstance(r, list):
+            continue
+        for p in r:
+            if p["oa_id"] in seen:
+                continue
+            seen.add(p["oa_id"])
+            found.append(p)
+    return citation_rank(found)[:keep]
+
+
 def build_citation_graph(papers: list[dict], max_nodes: int = 22) -> dict:
     """
     Build a real citation network from the corpus:

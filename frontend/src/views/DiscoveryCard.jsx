@@ -1,13 +1,34 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { ArrowLeft, FlaskConical, ShieldAlert, Swords, Microscope, ClipboardList, Database, ExternalLink } from 'lucide-react'
+import { ArrowLeft, FlaskConical, ShieldAlert, Swords, Microscope, ClipboardList, Database, ExternalLink, ScanSearch, Activity, Atom } from 'lucide-react'
 import { getHypothesis, getDebates } from '../lib/api'
 import { ArchetypeBadge, GenBadge } from '../components/Badges'
 import ScoreRing from '../components/ScoreRing'
 import DimensionBars from '../components/DimensionBars'
 import { DimensionRadar, EloLine, eloTimeline } from '../components/Charts'
 import { DIMENSIONS, scoreColor } from '../lib/ui'
+
+const VERDICT_META = {
+  novel: { color: '70 229 181', label: 'Novel', note: 'No close prior art found.' },
+  incremental: { color: '125 211 252', label: 'Incremental', note: 'An advance over existing work.' },
+  recombination: { color: '245 181 71', label: 'Recombination', note: 'Combines already-published components.' },
+  known: { color: '255 92 122', label: 'Already known', note: 'Substantially already published.' },
+}
+
+const FAILURE_META = {
+  untested: { color: '70 229 181', label: 'Clinically untested', note: 'No registered trials found for this approach.' },
+  in_progress: { color: '125 211 252', label: 'In trials', note: 'Currently under clinical investigation.' },
+  failed_before: { color: '255 92 122', label: 'Failed before', note: 'A prior trial was terminated or withdrawn.' },
+  mixed: { color: '245 181 71', label: 'Mixed evidence', note: 'Prior trials show mixed results.' },
+  established: { color: '245 181 71', label: 'Already tried', note: 'This intervention has prior trial history.' },
+}
+
+const PLAUS_META = {
+  coherent: { color: '70 229 181', label: 'Mechanistically coherent', note: 'The proposed mechanism holds up against known biology.' },
+  uncertain: { color: '245 181 71', label: 'Mechanistically uncertain', note: 'Parts of the mechanism are unverified.' },
+  incoherent: { color: '255 92 122', label: 'Mechanistically incoherent', note: 'The mechanism conflicts with established biology.' },
+}
 
 function Section({ icon: Icon, title, color, children }) {
   return (
@@ -38,6 +59,13 @@ export default function DiscoveryCard() {
   const rationale = s.rationale || {}
   const feas = rationale.feasibility || {}
   const crit = h.critique || {}
+  const nov = h.novelty || null
+  const vmeta = nov ? (VERDICT_META[nov.verdict] || VERDICT_META.incremental) : null
+  const pf = h.prior_failure || null
+  const fmeta = pf ? (FAILURE_META[pf.verdict] || FAILURE_META.untested) : null
+  const trials = h.trials || []
+  const pl = h.plausibility || null
+  const pmeta = pl ? (PLAUS_META[pl.verdict] || PLAUS_META.uncertain) : null
 
   return (
     <div className="h-full overflow-y-auto">
@@ -53,8 +81,7 @@ export default function DiscoveryCard() {
               <div className="flex items-center gap-2 flex-wrap">
                 <ArchetypeBadge archetype={h.archetype} />
                 <GenBadge type={h.generation_type} parents={h.parent_ids} />
-                <span className="font-mono text-phosphor text-sm">elo {Math.round(h.elo_score)}</span>
-                <span className="font-mono text-ink-3 text-xs">{h.wins || 0}W · {h.losses || 0}L</span>
+                <span className="font-mono text-ink-3 text-xs" title="Pairwise debate preference signal — secondary to the discovery score">elo {Math.round(h.elo_score)} · {h.wins || 0}W·{h.losses || 0}L</span>
               </div>
               <h1 className="font-display text-3xl text-ink-0 mt-3 leading-tight">{h.title}</h1>
             </div>
@@ -75,6 +102,142 @@ export default function DiscoveryCard() {
             </div>
           )}
         </motion.div>
+
+        {/* grounded novelty / prior-art check */}
+        {nov && (
+          <div className="mt-3.5">
+            <Section icon={ScanSearch} title="Prior-art check — grounded against live literature" color={vmeta.color}>
+              <div className="flex items-center gap-3 flex-wrap mb-3">
+                <span className="chip text-[12px]" style={{ color: `rgb(${vmeta.color})`, borderColor: `rgb(${vmeta.color} / 0.4)`, background: `rgb(${vmeta.color} / 0.08)` }}>
+                  {vmeta.label}
+                </span>
+                <span className="text-[12px] text-ink-3">{vmeta.note}</span>
+                <div className="flex items-center gap-4 ml-auto font-mono text-[12px]">
+                  <span className="text-ink-3">grounded novelty <span className="text-base" style={{ color: `rgb(${vmeta.color})` }}>{Math.round(nov.novelty_score ?? 0)}</span></span>
+                  {h.prior_art?.length > 0 && <span className="text-ink-3">{h.prior_art.length} papers checked</span>}
+                </div>
+              </div>
+              {nov.assessment && <p className="text-[13px] text-ink-1 leading-relaxed">{nov.assessment}</p>}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 mt-4">
+                {nov.components_known?.length > 0 && (
+                  <div>
+                    <div className="label-mono mb-1" style={{ color: 'rgb(245 181 71)' }}>Already in the literature</div>
+                    <ul className="space-y-1">{nov.components_known.slice(0, 6).map((c, i) => <li key={i} className="text-[12px] text-ink-2 leading-snug">· {c}</li>)}</ul>
+                  </div>
+                )}
+                {nov.novel_element && (
+                  <div>
+                    <div className="label-mono mb-1" style={{ color: 'rgb(70 229 181)' }}>What appears genuinely new</div>
+                    <p className="text-[12px] text-ink-1 leading-snug">{nov.novel_element}</p>
+                  </div>
+                )}
+              </div>
+
+              {nov.closest_prior_art?.length > 0 && (
+                <div className="mt-4">
+                  <div className="label-mono mb-2">Closest existing work</div>
+                  <div className="space-y-1.5">
+                    {nov.closest_prior_art.slice(0, 4).map((p, i) => {
+                      const match = (h.prior_art || []).find((x) => x.title === p.title)
+                      const url = match?.oa_id ? `https://openalex.org/${match.oa_id}` : null
+                      return (
+                        <div key={i} className="panel px-3 py-2">
+                          <div className="flex items-start gap-2 text-[12.5px]">
+                            <span className="font-mono text-ink-3 shrink-0">{p.year || '—'}</span>
+                            <div className="min-w-0">
+                              {url ? (
+                                <a href={url} target="_blank" rel="noreferrer" className="text-ink-0 hover:text-phosphor inline-flex items-center gap-1">{p.title} <ExternalLink size={11} /></a>
+                              ) : <span className="text-ink-0">{p.title}</span>}
+                              {p.overlap && <div className="text-[11.5px] text-ink-2 leading-snug mt-0.5">{p.overlap}</div>}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </Section>
+          </div>
+        )}
+
+        {/* reality check — already tried clinically? */}
+        {pf && (
+          <div className="mt-3.5">
+            <Section icon={Activity} title="Reality check — has this already been tried?" color={fmeta.color}>
+              <div className="flex items-center gap-3 flex-wrap mb-3">
+                <span className="chip text-[12px]" style={{ color: `rgb(${fmeta.color})`, borderColor: `rgb(${fmeta.color} / 0.4)`, background: `rgb(${fmeta.color} / 0.08)` }}>
+                  {fmeta.label}
+                </span>
+                <span className="text-[12px] text-ink-3">{fmeta.note}</span>
+                {trials.length > 0 && (
+                  <span className="font-mono text-[12px] text-ink-3 ml-auto">
+                    {trials.length} trials checked
+                    {trials.some((t) => t.failed) && <span style={{ color: 'rgb(255 92 122)' }}> · {trials.filter((t) => t.failed).length} terminated/withdrawn</span>}
+                  </span>
+                )}
+              </div>
+              {pf.caution && (
+                <div className="text-[12.5px] mb-2 px-3 py-2 rounded-md" style={{ color: 'rgb(255 92 122)', background: 'rgb(255 92 122 / 0.08)', border: '1px solid rgb(255 92 122 / 0.2)' }}>⚠ {pf.caution}</div>
+              )}
+              {pf.assessment && <p className="text-[13px] text-ink-1 leading-relaxed">{pf.assessment}</p>}
+
+              {trials.length > 0 && (
+                <div className="mt-4">
+                  <div className="label-mono mb-2">Registered trials (ClinicalTrials.gov)</div>
+                  <div className="space-y-1.5">
+                    {trials.slice(0, 6).map((t, i) => (
+                      <div key={i} className="panel px-3 py-2">
+                        <div className="flex items-center gap-2 flex-wrap text-[12.5px]">
+                          <span className="chip" style={{ fontSize: '0.6rem', color: t.failed ? 'rgb(255 92 122)' : 'rgb(124 134 156)', borderColor: t.failed ? 'rgb(255 92 122 / 0.4)' : 'rgb(140 160 200 / 0.2)' }}>{t.status}</span>
+                          {t.phase && <span className="font-mono text-[10px] text-ink-3">{t.phase}</span>}
+                          <a href={t.url} target="_blank" rel="noreferrer" className="text-ink-0 hover:text-phosphor inline-flex items-center gap-1 min-w-0">
+                            <span className="truncate">{t.title}</span><ExternalLink size={11} className="shrink-0" />
+                          </a>
+                        </div>
+                        {t.why_stopped && <div className="text-[11.5px] mt-0.5" style={{ color: 'rgb(255 92 122)' }}>stopped: {t.why_stopped}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Section>
+          </div>
+        )}
+
+        {/* mechanistic plausibility */}
+        {pl && (
+          <div className="mt-3.5">
+            <Section icon={Atom} title="Mechanistic plausibility — does the biology hold up?" color={pmeta.color}>
+              <div className="flex items-center gap-3 flex-wrap mb-3">
+                <span className="chip text-[12px]" style={{ color: `rgb(${pmeta.color})`, borderColor: `rgb(${pmeta.color} / 0.4)`, background: `rgb(${pmeta.color} / 0.08)` }}>
+                  {pmeta.label}
+                </span>
+                <span className="text-[12px] text-ink-3">{pmeta.note}</span>
+                <div className="flex items-center gap-4 ml-auto font-mono text-[12px]">
+                  <span className="text-ink-3">coherence <span className="text-base" style={{ color: `rgb(${pmeta.color})` }}>{Math.round(pl.plausibility_score ?? 0)}</span></span>
+                  {pl.penalty > 0 && <span style={{ color: 'rgb(255 92 122)' }}>−{Math.round(pl.penalty)} penalty</span>}
+                </div>
+              </div>
+              {pl.assessment && <p className="text-[13px] text-ink-1 leading-relaxed">{pl.assessment}</p>}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 mt-4">
+                {pl.concerns?.length > 0 && (
+                  <div>
+                    <div className="label-mono mb-1" style={{ color: 'rgb(255 92 122)' }}>Mechanistic concerns</div>
+                    <ul className="space-y-1">{pl.concerns.slice(0, 5).map((c, i) => <li key={i} className="text-[12px] text-ink-2 leading-snug">· {c}</li>)}</ul>
+                  </div>
+                )}
+                {pl.key_factors?.length > 0 && (
+                  <div>
+                    <div className="label-mono mb-1">Key mechanistic factors</div>
+                    <ul className="space-y-1">{pl.key_factors.slice(0, 5).map((c, i) => <li key={i} className="text-[12px] text-ink-2 leading-snug">· {c}</li>)}</ul>
+                  </div>
+                )}
+              </div>
+            </Section>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5 mt-3.5">
           <Section icon={FlaskConical} title="The hypothesis">

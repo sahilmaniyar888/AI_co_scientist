@@ -42,6 +42,9 @@ export const AGENT_SEQUENCE = [
   { name: 'Skeptic', glyph: '⊘' },
   { name: 'Ranking Tournament', glyph: '⚔' },
   { name: 'Evolution', glyph: '⟳' },
+  { name: 'Novelty Verifier', glyph: '⌖' },
+  { name: 'Trial Auditor', glyph: '⚕' },
+  { name: 'Plausibility Auditor', glyph: '⚛' },
   { name: 'Discovery Scoring', glyph: '◎' },
   { name: 'Meta-Review', glyph: '❖' },
 ]
